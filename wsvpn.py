@@ -93,6 +93,29 @@ def is_maintenance_active():
     with _maintenance_lock:
         return _maintenance_mode_cache
 
+def parse_and_encrypt_vless(vless_url):
+    """Шифрует ссылку для Android приложения"""
+    if not vless_url:
+        return None
+    try:
+        # Убираем лишние пробелы
+        vless_url = vless_url.strip()
+        
+        # Создаем шифр (SECRET_WORD должен быть 16 байт)
+        cipher = AES.new(SECRET_WORD, AES.MODE_ECB)
+        
+        # Подготавливаем данные (Padding)
+        padded_data = pad(vless_url.encode('utf-8'), 16)
+        
+        # Шифруем
+        encrypted = cipher.encrypt(padded_data)
+        
+        # Кодируем в Base64 без переносов строк
+        return base64.b64encode(encrypted).decode('utf-8')
+    except Exception as e:
+        print(f"[encrypt] Ошибка: {e}")
+        return None
+
 def decrypt_and_parse_vless(encrypted_b64):
     """Дешифрует одиночную зашифрованную строку напрямую в сырую ссылку (без даты)"""
     if not encrypted_b64:
