@@ -87,46 +87,46 @@ def set_maintenance_mode(state_str):
     with _maintenance_lock:
         _maintenance_mode_cache = (state_str == "1")
 
+def is_maintenance_active():
+    """Безопасно и мгновенно возвращает статус тех. работ из оперативной памяти"""
+    with _maintenance_lock:
+        return _maintenance_mode_cache
+
 def clean_and_split_incoming_keys(raw_text):
     """
-    ⚡ УМНЫЙ КЛИНЕР И РАСКЛЕЙЩИК КЛЮЧЕЙ
-    1. Удаляет перед протоколами мусорные цифры (например '1vless://' -> 'vless://')
-    2. Разрезает слипшиеся ссылки, со строгой границей слова \b (чтобы ss:// не срезал vless://)
-    3. Декодирует URL-закодированные флаги и эмодзи (#%F0%9F%87%AB -> #🇫🇲)
+    ⚡ СТРОГИЙ КЛИНЕР — ТОЛЬКО VLESS БЕЗ СРЕЗА НАЗВАНИЙ
+    1. Убирает цифры перед vless:// ('1vless://' -> 'vless://')
+    2. Извлекает исключительно ссылки vless://
+    3. Сохраняет 100% текста и эмодзи после #
     """
     if not raw_text or not raw_text.strip():
         return []
 
-    # Убираем префиксные цифры перед протоколами (например "1vless://" -> "vless://")
-    cleaned_text = re.sub(r'(?i)\b\d+(?=\b(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', '', raw_text.strip())
+    # Убираем префиксные цифры перед vless://
+    cleaned_text = re.sub(r'(?i)\b\d+(?=\bvless://)', '', raw_text.strip())
 
-    # Разделяем слипшиеся ссылки по заголовкам протоколов со строгой границей слова \b
-    pattern = re.compile(r'(?i)(?=\b(?:vless|vmess|trojan|ss|hy2|hysteria2)://)')
-    raw_parts = pattern.split(cleaned_text)
+    # Ищем ВСЕ полные совпадения только для vless://
+    pattern = re.compile(r'(?i)\bvless://[^\s]+')
+    matches = pattern.findall(cleaned_text)
 
     cleaned_keys = []
     seen = set()
 
-    for part in raw_parts:
-        part = part.strip()
-        if not part:
+    for link in matches:
+        link = link.strip()
+        if not link:
             continue
 
-        # ⚡ ИСПРАВЛЕНИЕ: Ищем точное совпадение протокола с границей слова \b
-        match = re.search(r'(?i)\b(vless|vmess|trojan|ss|hy2|hysteria2)://[^\s]+', part)
-        if not match:
-            continue
-
-        link = match.group(0).strip()
-
-        # Декодируем названия серверов после # (например #%F0%9F%87%AB... -> #🇫🇲...)
+        # Декодируем только %XX теги, сохраняя эмодзи и текст без срезов
         if '#' in link:
-            base_url, hash_tag = link.split('#', 1)
-            try:
-                decoded_tag = urllib.parse.unquote(hash_tag)
-                link = f"{base_url}#{decoded_tag}"
-            except Exception:
-                pass
+            base_url = link[:link.rfind('#')]
+            hash_tag = link[link.rfind('#')+1:]
+            if '%' in hash_tag:
+                try:
+                    hash_tag = urllib.parse.unquote(hash_tag)
+                except Exception:
+                    pass
+            link = f"{base_url}#{hash_tag}"
 
         if link and link not in seen:
             seen.add(link)
@@ -134,55 +134,29 @@ def clean_and_split_incoming_keys(raw_text):
 
     return cleaned_keys
 
-def is_maintenance_active():
-    """Безопасно и мгновенно возвращает статус тех. работ из оперативной памяти"""
-    with _maintenance_lock:
-        return _maintenance_mode_cache
-
 def parse_and_encrypt_vless(vless_url, expire_timestamp=None):
-    """
-    Шифрует сырую ссылку подписки в формате AES-128-GCM для Android-приложения.
-    Формат вывода: Base64(IV[12 bytes] + Ciphertext + Tag[16 bytes])
-    """
-    if not vless_url or not vless_url.strip().startswith(("vless://", "vmess://", "trojan://", "ss://")):
+    """Шифрует сырую VLESS ссылку в формат AES-128-GCM (Строго VLESS)"""
+    if not vless_url or not vless_url.strip():
         return None
+        
+    clean_url = vless_url.strip()
+    # Принимаем СТРОГО только VLESS
+    if not clean_url.lower().startswith("vless://"):
+        return None
+        
     try:
-        url_bytes = vless_url.strip().encode('utf-8')
-        
-        # Генерируем случайный 12-байтовый IV (вектор инициализации)
+        url_bytes = clean_url.encode('utf-8')
         iv = os.urandom(12)
-        
-        # Создаем шифр AES-GCM
         cipher = AES.new(SECRET_WORD, AES.MODE_GCM, nonce=iv)
         ciphertext, tag = cipher.encrypt_and_digest(url_bytes)
-        
-        # Объединяем: IV (12B) + Шифротекст + Auth Tag (16B)
         combined = iv + ciphertext + tag
-        
-        # Кодируем в Base64
         return base64.b64encode(combined).decode('utf-8')
     except Exception as e:
         print(f"[encrypt] Ошибка шифрования ссылки в AES-GCM: {e}")
         return None
 
-def split_concatenated_keys(keys_list):
-    """Разбивает любые слипшиеся ключи по заголовкам протоколов"""
-    result = []
-    pattern = re.compile(r'(?=(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', re.IGNORECASE)
-    for item in keys_list:
-        if not item:
-            continue
-        parts = pattern.split(item)
-        for p in parts:
-            cleaned = p.strip()
-            if cleaned.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://", "hysteria2://")):
-                result.append(cleaned)
-    return result
-
 def decrypt_and_parse_vless(encrypted_b64):
-    """
-    Дешифрует строку AES-128-GCM обратно в чистую ссылку (для веб-админки и бота)
-    """
+    """Дешифрует зашифрованную строку VLESS обратно в ссылку"""
     if not encrypted_b64:
         return None
     try:
@@ -190,41 +164,42 @@ def decrypt_and_parse_vless(encrypted_b64):
         if len(combined) <= 12 + 16:
             return None
             
-        iv = combined[:12]         # Первые 12 байт — IV
-        tag = combined[-16:]       # Последние 16 байт — Tag
-        ciphertext = combined[12:-16] # Середина — шифротекст
+        iv = combined[:12]
+        tag = combined[-16:]
+        ciphertext = combined[12:-16]
         
         cipher = AES.new(SECRET_WORD, AES.MODE_GCM, nonce=iv)
         decrypted_bytes = cipher.decrypt_and_verify(ciphertext, tag)
-        return decrypted_bytes.decode('utf-8')
+        decrypted_str = decrypted_bytes.decode('utf-8')
+        return decrypted_str if decrypted_str.lower().startswith("vless://") else None
     except Exception as e:
         print(f"[decrypt] Ошибка расшифрования AES-GCM: {e}")
         return None
 
 def decrypt_any_subscription_input(raw_input):
     """
-    Дешифрует как одиночную зашифрованную строку, так и полный Base64-бандл подписки
+    Дешифрует зашифрованную строку или бандл подписки (Строго VLESS)
     """
     raw_input = raw_input.strip()
     if not raw_input:
         return []
     
-    # 1. Попробуем расшифровать как одиночную зашифрованную строку
+    # 1. Пробуем расшифровать как одиночную зашифрованную строку
     decrypted = decrypt_and_parse_vless(raw_input)
-    if decrypted and decrypted.startswith(("vless://", "vmess://", "trojan://", "ss://")):
+    if decrypted and decrypted.lower().startswith("vless://"):
         return [decrypted]
         
-    # 2. Если не вышло, пробуем распарсить как подписку (двойной Base64)
+    # 2. Пробуем распарсить как подписку (двойной Base64)
     try:
         outer_decoded = base64.b64decode(raw_input).decode('utf-8')
         lines = [line.strip() for line in outer_decoded.split('\n') if line.strip()]
         results = []
         for line in lines:
-            if line.startswith(("vless://", "vmess://", "trojan://", "ss://")):
+            if line.lower().startswith("vless://"):
                 results.append(line)
             else:
                 dec = decrypt_and_parse_vless(line)
-                if dec and dec.startswith(("vless://", "vmess://", "trojan://", "ss://")):
+                if dec and dec.lower().startswith("vless://"):
                     results.append(dec)
         return results
     except Exception as e:
@@ -968,9 +943,10 @@ ROLE_PRESETS = {
 
 def log_admin_action(admin_id, action, target_id=None, details=None, target_name=None, ip_address=None):
     try:
-        admin_name = get_user_display_name(admin_id)
+        # Исправлено: заменено с get_user_display_name на get_user_display_name_cached
+        admin_name = get_user_display_name_cached(admin_id)
         if target_id:
-            target_name = target_name or get_user_display_name(target_id)
+            target_name = target_name or get_user_display_name_cached(target_id)
         
         conn = get_db_connection()
         cur = conn.cursor()
@@ -1263,6 +1239,8 @@ def get_setting_bool(key, default=False):
 
 # ==================== БЛОКИРОВКА ТЕХНИЧЕСКОГО ОБСЛУЖИВАНИЯ ====================
 
+# ==================== БЛОКИРОВКА ПРИ ТЕХНИЧЕСКОМ ОБСЛУЖИВАНИИ ====================
+
 @bot.message_handler(func=lambda m: is_maintenance_active() and not is_admin(m.from_user.id))
 def maintenance_block_message(message):
     text = (
@@ -1280,7 +1258,6 @@ def maintenance_block_callback(call):
         "🛠 Бот находится на техническом обслуживании. Операции временно недоступны.", 
         show_alert=True
     )
-
 # ==============================================================================
 
 def is_blocked(user_id):
@@ -1457,13 +1434,14 @@ def callback_add_keys_bot(call):
     
     msg = bot.send_message(
         call.message.chat.id,
-        "🔑 *Добавление ключей в базу подписок*\n\n"
-        "Отправьте мне список VLESS/VMESS/Trojan/SS конфигураций. \n"
+        "🔑 *Добавление VLESS ключей в базу подписок*\n\n"
+        "Отправьте мне список **VLESS** конфигураций (`vless://...`). \n"
         "Вы можете вставить как одну, так и несколько ссылок одновременно (каждую с новой строки):",
         parse_mode="Markdown"
     )
     bot.register_next_step_handler(msg, process_admin_add_keys_bot)
     bot.answer_callback_query(call.id)
+
 
 def process_admin_add_keys_bot(message):
     user_id = message.from_user.id
@@ -1539,13 +1517,15 @@ def callback_keys_clean_dead(call):
         return
     
     keys = get_subscription_keys_from_db()
-    cleaned = [k for k in keys if k.startswith(("vless://", "vmess://", "trojan://", "ss://"))]
+    # Оставляем СТРОГО только корректные vless:// ссылки
+    cleaned = [k for k in keys if k.lower().startswith("vless://")]
     save_subscription_keys_to_db(cleaned)
     
     removed = len(keys) - len(cleaned)
-    log_admin_action(user_id, "Очистил нерабочие ключи подписки", details=f"Удалено: {removed} шт.")
-    bot.answer_callback_query(call.id, f"🧹 Удалено {removed} нерабочих ключей!", show_alert=True)
+    log_admin_action(user_id, "Очистил сторонние/нерабочие ключи", details=f"Удалено: {removed} шт.")
+    bot.answer_callback_query(call.id, f"🧹 Удалено {removed} не-VLESS ключей!", show_alert=True)
     show_keys_menu(user_id, call.message.chat.id, call.message.message_id)
+
     
 @bot.callback_query_handler(func=lambda call: call.data == "admin_sub_keys_load")
 def callback_sub_keys_load(call):
@@ -2006,8 +1986,8 @@ def process_bot_encrypt(message):
         bot.reply_to(message, "❌ Отменено.")
         return
         
-    if not url.startswith(("vless://", "vmess://", "trojan://", "ss://")):
-        bot.reply_to(message, "❌ Ссылка должна начинаться с допустимого протокола (vless://, vmess://, trojan://, ss://).")
+    if not url.lower().startswith("vless://"):
+        bot.reply_to(message, "❌ Ошибка! Бот работает **строго** с протоколом `vless://`.")
         return
         
     encrypted = parse_and_encrypt_vless(url)
@@ -2018,7 +1998,7 @@ def process_bot_encrypt(message):
             parse_mode="Markdown"
         )
     else:
-        bot.reply_to(message, "❌ Ошибка шифрования.")
+        bot.reply_to(message, "❌ Ошибка шифрования VLESS ссылки.")
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_sub_keys_backup")
@@ -3772,13 +3752,12 @@ def api_game_penalty():
 
 
 # ==================== СТРАНИЦА ПОДПИСКИ В БРАУЗЕРЕ (GET) ====================
-# ==================== СТРАНИЦА ПОДПИСКИ В БРАУЗЕРЕ (GET) ====================
 @app.route('/sub/<token>', methods=['GET', 'POST'])
 def serve_subscription(token):
     SECRET_USER_AGENT = "WSVPN-Android-Client/2.0 (AppBuild-2026; SecureVault)"
     SECRET_SIGNATURE = "WSVPN-Secured-Post-Auth-2026"
 
-    # 1. Если кликнули в БРАУЗЕРЕ (GET-запрос) — показываем интерактивный сайт
+    # 1. GET-запрос из браузера — показываем заглушку
     if request.method == 'GET':
         IMAGE_URL = "https://s6.iimage.su/s/02/gwkNOTdxzBBzwgCP8Tip3ZenD0vZrmUKclg2gNb9A.jpg"
 
@@ -3802,24 +3781,6 @@ def serve_subscription(token):
                     align-items: center;
                     justify-content: space-between;
                     padding: 20px 16px 90px 16px;
-                    position: relative;
-                }}
-                /* Тёмный оверлей поверх фона */
-                body::before {{
-                    content: "";
-                    position: fixed;
-                    top: 0; left: 0; right: 0; bottom: 0;
-                    background: rgba(9, 10, 15, 0.78);
-                    backdrop-filter: blur(8px);
-                    -webkit-backdrop-filter: blur(8px);
-                    z-index: 1;
-                }}
-                .main-content {{
-                    position: relative;
-                    z-index: 2;
-                    width: 100%;
-                    max-width: 380px;
-                    margin: auto;
                 }}
                 .card {{
                     background: rgba(22, 22, 30, 0.85);
@@ -3828,399 +3789,28 @@ def serve_subscription(token):
                     padding: 24px;
                     text-align: center;
                     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
-                }}
-                .avatar-container {{
-                    width: 180px;
-                    height: 180px;
-                    margin: 0 auto 16px auto;
-                    border-radius: 20px;
-                    overflow: hidden;
-                    border: 2px solid #2D54FF;
-                    box-shadow: 0 8px 25px rgba(45, 84, 255, 0.4);
-                }}
-                .avatar-container img {{
-                    width: 100%;
-                    height: 100%;
-                    object-fit: cover;
-                }}
-                h1 {{
-                    color: #FF5252;
-                    font-size: 20px;
-                    font-weight: 800;
-                    margin-bottom: 8px;
-                }}
-                p {{
-                    color: #B0B0C0;
-                    font-size: 13.5px;
-                    line-height: 1.5;
-                    margin-bottom: 20px;
-                }}
-                .btn {{
-                    display: block;
-                    width: 100%;
-                    background: #2D54FF;
-                    color: white;
-                    padding: 14px;
-                    text-decoration: none;
-                    border-radius: 16px;
-                    font-weight: bold;
-                    font-size: 15px;
-                    box-shadow: 0 4px 15px rgba(45, 84, 255, 0.4);
-                    border: none;
-                    cursor: pointer;
-                }}
-                
-                /* Фиксированная кнопка снизу */
-                .bottom-bar {{
-                    position: fixed;
-                    bottom: 0; left: 0; right: 0;
-                    padding: 16px;
-                    background: rgba(13, 13, 17, 0.9);
-                    backdrop-filter: blur(12px);
-                    border-top: 1px solid rgba(255, 255, 255, 0.1);
-                    z-index: 10;
-                    display: flex;
-                    justify-content: center;
-                }}
-                .btn-hack {{
-                    background: linear-gradient(135deg, #FF5252, #FF1744);
-                    color: white;
-                    border: none;
-                    padding: 14px 28px;
-                    border-radius: 18px;
-                    font-size: 15px;
-                    font-weight: 800;
-                    cursor: pointer;
-                    box-shadow: 0 6px 20px rgba(255, 82, 82, 0.4);
-                    width: 100%;
+                    margin: auto;
                     max-width: 380px;
                 }}
-
-                /* Общие Модальные Окна */
-                .modal-overlay {{
-                    position: fixed;
-                    top: 0; left: 0; right: 0; bottom: 0;
-                    background: rgba(0, 0, 0, 0.9);
-                    backdrop-filter: blur(15px);
-                    z-index: 100;
-                    display: none;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 20px;
-                }}
-                .modal-overlay.active {{
-                    display: flex;
-                }}
-                .modal-card {{
-                    background: #181925;
-                    border: 2px solid #FF5252;
-                    border-radius: 28px;
-                    padding: 24px;
-                    width: 100%;
-                    max-width: 360px;
-                    text-align: center;
-                    box-shadow: 0 0 40px rgba(255, 82, 82, 0.3);
-                }}
-
-                /* Стили Игры */
-                .game-board {{
-                    display: grid;
-                    grid-template-columns: repeat(3, 1fr);
-                    gap: 10px;
-                    margin: 16px 0;
-                }}
-                .cell {{
-                    aspect-ratio: 1;
-                    background: #222436;
-                    border-radius: 16px;
-                    border: 1.5px solid rgba(255, 255, 255, 0.08);
-                    font-size: 32px;
-                    font-weight: 900;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: pointer;
-                    user-select: none;
-                }}
-                .cell.x {{ color: #00F5D4; }}
-                .cell.o {{ color: #FF5252; }}
-                .status-msg {{
-                    font-size: 13.5px;
-                    font-weight: bold;
-                    min-height: 42px;
-                    margin-bottom: 12px;
-                    color: #FF1744;
-                }}
-                .close-btn {{
-                    background: #2A2D3D;
-                    color: white;
-                    border: none;
-                    padding: 10px 20px;
-                    border-radius: 12px;
-                    font-weight: bold;
-                    cursor: pointer;
-                    width: 100%;
-                }}
-
-                /* 👁️ НЕВИДИМАЯ ССЫЛКА В ТЕКСТЕ */
-                .secret-invisible-link {{
-                    color: inherit;
-                    text-decoration: none;
-                    cursor: pointer;
-                    border-bottom: 1px transparent solid;
-                }}
-                .secret-invisible-link:hover {{
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-                }}
+                h1 {{ color: #FF5252; font-size: 20px; font-weight: 800; margin-bottom: 8px; }}
+                p {{ color: #B0B0C0; font-size: 13.5px; line-height: 1.5; margin-bottom: 20px; }}
+                .btn {{ display: block; width: 100%; background: #2D54FF; color: white; padding: 14px; text-decoration: none; border-radius: 16px; font-weight: bold; font-size: 15px; }}
             </style>
         </head>
         <body>
-            <div class="main-content">
-                <div class="card">
-                    <div class="avatar-container">
-                        <img src="{IMAGE_URL}" alt="Bad Boy!">
-                    </div>
-                    <h1>Ай-ай-ай, не надо так делать!</h1>
-                    <p>Плохой мальчик! 😼<br>Не нужно открывать ссылку подписки в браузере.<br>Вставьте её в приложение <b>WSVPN</b>.</p>
-                    <a href="https://github.com/VSd223/WSVPN/releases/download/V1.0/app-debug.apk" class="btn">
-                        📥 Скачать клиент WSVPN
-                    </a>
-                </div>
+            <div class="card">
+                <h1>Ай-ай-ай, не надо так делать!</h1>
+                <p>Не нужно открывать ссылку подписки в браузере.<br>Вставьте её в приложение <b>WSVPN</b>.</p>
+                <a href="https://github.com/VSd223/WSVPN/releases/tag/V1.0" class="btn">
+                    📥 Скачать клиент WSVPN
+                </a>
             </div>
-
-            <!-- Кнопка снизу -->
-            <div class="bottom-bar">
-                <button class="btn-hack" onclick="openTermsModal()">😈 Я хочу вас взломать!</button>
-            </div>
-
-            <!-- 1. ОКНО С МУТНЫМИ УСЛОВИЯМИ И СКРЫТОЙ ССЫЛКОЙ -->
-            <div class="modal-overlay" id="termsModal">
-                <div class="modal-card">
-                    <h2 style="color:#FF5252; font-size:18px; margin-bottom:12px;">⚠️ Регламент Квази-Доступа</h2>
-                    
-                    <p style="text-align:left; color:#AAA; font-size:12.5px; line-height:1.55; margin-bottom:18px;">
-                        Нажимая кнопку ниже, вы (далее — <i>«Субъект Сессии»</i>) подтверждаете согласие с тем, что согласно подпункту 8.14.3 Регламента, любая попытка декомпиляции трафика влечет активацию рекурсивной фазы. В случае если волновой вектор вашей сессии войдет в инверсию с алгоритмом Minimax, Сервер обязуется применить <a href="https://t.me/WS_JuJuB01_vpn_keys" target="_blank" class="secret-invisible-link">Положение о правилах</a> с последующей калибровкой временного баланса на -86400 секунд и дисконнектом на 7200 секунд.<br><br>
-                        Любые квази-структурные риски несет исключительно Субъект.
-                    </p>
-
-                    <button class="btn" style="background:#FF5252; margin-bottom:10px;" onclick="acceptTermsAndStart()">
-                        ✅ Я принимаю условия и риски
-                    </button>
-                    <button class="close-btn" onclick="closeTermsModal()">❌ Отмена</button>
-                </div>
-            </div>
-
-            <!-- 2. ОКНО СЕЙ ИГРЫ (КРЕСТИКИ-НОЛИКИ) -->
-            <div class="modal-overlay" id="gameModal">
-                <div class="modal-card">
-                    <h2 style="color:white; font-size:18px;">❌ Крестики-Нолики ⭕</h2>
-                    <div id="attemptBadge" style="font-size:13px; color:#00F5D4; font-weight:bold; margin-top:4px;">Раунд: 1 / 3</div>
-                    
-                    <div class="game-board" id="board">
-                        <div class="cell" onclick="userMove(0)"></div>
-                        <div class="cell" onclick="userMove(1)"></div>
-                        <div class="cell" onclick="userMove(2)"></div>
-                        <div class="cell" onclick="userMove(3)"></div>
-                        <div class="cell" onclick="userMove(4)"></div>
-                        <div class="cell" onclick="userMove(5)"></div>
-                        <div class="cell" onclick="userMove(6)"></div>
-                        <div class="cell" onclick="userMove(7)"></div>
-                        <div class="cell" onclick="userMove(8)"></div>
-                    </div>
-
-                    <div class="status-msg" id="statusMsg">Ваш ход (X)!</div>
-                    
-                    <button class="btn" id="nextRoundBtn" style="display:none; background:#2D54FF; margin-bottom:10px;" onclick="startNextRound()">
-                        🔄 Начать следующий раунд
-                    </button>
-                    <button class="close-btn" onclick="closeGameModal()">Закрыть</button>
-                </div>
-            </div>
-
-            <script>
-                const token = "{token}";
-                let boardState = ['', '', '', '', '', '', '', '', ''];
-                let isGameActive = true;
-                let attemptCount = 0;
-                const huPlayer = 'X';
-                const aiPlayer = 'O';
-
-                function openTermsModal() {{
-                    document.getElementById('termsModal').classList.add('active');
-                }}
-
-                function closeTermsModal() {{
-                    document.getElementById('termsModal').classList.remove('active');
-                }}
-
-                function acceptTermsAndStart() {{
-                    document.getElementById('termsModal').classList.remove('active');
-                    attemptCount = 0;
-                    document.getElementById('gameModal').classList.add('active');
-                    startNextRound();
-                }}
-
-                function closeGameModal() {{
-                    document.getElementById('gameModal').classList.remove('active');
-                }}
-
-                function startNextRound() {{
-                    document.getElementById('nextRoundBtn').style.display = 'none';
-                    document.getElementById('attemptBadge').innerText = "Раунд: " + (attemptCount + 1) + " / 3";
-                    resetBoard();
-                }}
-
-                function resetBoard() {{
-                    boardState = ['', '', '', '', '', '', '', '', ''];
-                    isGameActive = true;
-                    document.getElementById('statusMsg').innerText = "Ваш ход (X)!";
-                    const cells = document.querySelectorAll('.cell');
-                    cells.forEach(c => {{
-                        c.innerText = '';
-                        c.className = 'cell';
-                    }});
-                }}
-
-                function userMove(index) {{
-                    if (boardState[index] !== '' || !isGameActive) return;
-
-                    boardState[index] = huPlayer;
-                    updateUI();
-
-                    if (checkWin(boardState, huPlayer)) {{
-                        document.getElementById('statusMsg').innerText = "🎉 Невероятно! Вы выиграли раунд!";
-                        isGameActive = false;
-                        return;
-                    }}
-
-                    if (checkTie(boardState)) {{
-                        document.getElementById('statusMsg').innerText = "🤝 Ничья! Бот защитил систему.";
-                        isGameActive = false;
-                        return;
-                    }}
-
-                    document.getElementById('statusMsg').innerText = "🤖 Бот думает...";
-                    isGameActive = false;
-
-                    setTimeout(() => {{
-                        let bestMove = minimax(boardState, aiPlayer).index;
-                        boardState[bestMove] = aiPlayer;
-                        updateUI();
-
-                        if (checkWin(boardState, aiPlayer)) {{
-                            attemptCount++;
-                            
-                            if (attemptCount < 3) {{
-                                document.getElementById('statusMsg').innerHTML = "💀 Бот выиграл раунд " + attemptCount + "/3!<br>Сыграйте следующий раунд.";
-                                document.getElementById('nextRoundBtn').style.display = 'block';
-                                document.getElementById('nextRoundBtn').innerText = "🔄 Начать раунд " + (attemptCount + 1) + " / 3";
-                            }} else {{
-                                document.getElementById('statusMsg').innerHTML = "💀 ВЫ ПРОИГРАЛИ ВСЕ 3 РАУНДА!<br>📉 Штраф: -1 день и бан ссылки на 2 часа!";
-                                sendPenalty();
-                            }}
-                        }} else if (checkTie(boardState)) {{
-                            document.getElementById('statusMsg').innerText = "🤝 Ничья! Попробуйте снова.";
-                            isGameActive = true;
-                        }} else {{
-                            document.getElementById('statusMsg').innerText = "Ваш ход (X)!";
-                            isGameActive = true;
-                        }}
-                    }}, 350);
-                }}
-
-                function updateUI() {{
-                    const cells = document.querySelectorAll('.cell');
-                    boardState.forEach((val, idx) => {{
-                        cells[idx].innerText = val;
-                        if (val === 'X') cells[idx].classList.add('x');
-                        if (val === 'O') cells[idx].classList.add('o');
-                    }});
-                }}
-
-                function sendPenalty() {{
-                    fetch('/api/game_penalty', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ token: token }})
-                    }}).then(res => res.json())
-                    .then(data => console.log('Penalty applied:', data))
-                    .catch(err => console.error(err));
-                }}
-
-                // Непобедимый алгоритм Minimax
-                function minimax(newBoard, player) {{
-                    let availSpots = emptyIndices(newBoard);
-
-                    if (checkWin(newBoard, huPlayer)) return {{ score: -10 }};
-                    if (checkWin(newBoard, aiPlayer)) return {{ score: 10 }};
-                    if (availSpots.length === 0) return {{ score: 0 }};
-
-                    let moves = [];
-                    for (let i = 0; i < availSpots.length; i++) {{
-                        let move = {{}};
-                        move.index = availSpots[i];
-                        newBoard[availSpots[i]] = player;
-
-                        if (player === aiPlayer) {{
-                            let result = minimax(newBoard, huPlayer);
-                            move.score = result.score;
-                        }} else {{
-                            let result = minimax(newBoard, aiPlayer);
-                            move.score = result.score;
-                        }}
-
-                        newBoard[availSpots[i]] = '';
-                        moves.push(move);
-                    }}
-
-                    let bestMove;
-                    if (player === aiPlayer) {{
-                        let bestScore = -10000;
-                        for (let i = 0; i < moves.length; i++) {{
-                            if (moves[i].score > bestScore) {{
-                                bestScore = moves[i].score;
-                                bestMove = i;
-                            }}
-                        }}
-                    }} else {{
-                        let bestScore = 10000;
-                        for (let i = 0; i < moves.length; i++) {{
-                            if (moves[i].score < bestScore) {{
-                                bestScore = moves[i].score;
-                                bestMove = i;
-                            }}
-                        }}
-                    }}
-                    return moves[bestMove];
-                }}
-
-                function emptyIndices(b) {{
-                    return b.map((val, idx) => val === '' ? idx : null).filter(v => v !== null);
-                }}
-
-                function checkWin(b, p) {{
-                    return (
-                        (b[0] === p && b[1] === p && b[2] === p) ||
-                        (b[3] === p && b[4] === p && b[5] === p) ||
-                        (b[6] === p && b[7] === p && b[8] === p) ||
-                        (b[0] === p && b[3] === p && b[6] === p) ||
-                        (b[1] === p && b[4] === p && b[7] === p) ||
-                        (b[2] === p && b[5] === p && b[8] === p) ||
-                        (b[0] === p && b[4] === p && b[8] === p) ||
-                        (b[2] === p && b[4] === p && b[6] === p)
-                    );
-                }}
-
-                function checkTie(b) {{
-                    return emptyIndices(b).length === 0;
-                }}
-            </script>
         </body>
         </html>
         """
         return html_page, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
-    # 2. Если POST-запрос от ЧУЖОГО клиента или без секретной подписи
+    # 2. Проверка заголовков безопасности на POST
     incoming_ua = request.headers.get('User-Agent', '')
     incoming_sig = request.headers.get('X-WSVPN-Signature', '')
 
@@ -4233,7 +3823,7 @@ def serve_subscription(token):
         base64_decoy = base64.b64encode(decoy_vless.encode('utf-8')).decode('utf-8')
         return base64_decoy, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
-    # 3. НАСТОЯЩАЯ ВЫДАЧА ПОДПИСКИ ДЛЯ НАШЕГО ПРИЛОЖЕНИЯ (POST)
+    # 3. Выдача VLESS подписки
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -4252,18 +3842,14 @@ def serve_subscription(token):
             return "Subscription expired or blocked", 403
             
         db_keys = get_subscription_keys_from_db()
-        raw_keys = split_concatenated_keys(db_keys) # ⚡ Расклеиваем ключи перед отдачей
         
+        # Фильтруем и отдаем СТРОГО только VLESS ссылки
         raw_keys = []
         for k in db_keys:
-            if k.startswith(("vless://", "vmess://", "trojan://", "ss://")):
-                raw_keys.append(k)
-            else:
-                dec = decrypt_and_parse_vless(k)
-                if dec and dec.startswith(("vless://", "vmess://", "trojan://", "ss://")):
-                    raw_keys.append(dec)
-                else:
-                    raw_keys.append(k)
+            split_keys = clean_and_split_incoming_keys(k)
+            for sk in split_keys:
+                if sk.lower().startswith("vless://"):
+                    raw_keys.append(sk)
         
         global_crypt = get_setting("global_encryption", "1") == "1"
         use_encryption = global_crypt and (user_crypt == 1)
@@ -4329,6 +3915,39 @@ def callback_user_detail(call):
     except Exception as e:
         print(f"[callback_user_detail] Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка")
+
+def add_broadcast_channel(channel_id, channel_name, added_by):
+    """Добавляет канал в базу каналов для рассылки"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO broadcast_channels (channel_id, channel_name, added_by, added_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (channel_id) DO NOTHING
+        """, (channel_id, channel_name, added_by, int(time.time())))
+        conn.commit()
+    except Exception as e:
+        print(f"[add_broadcast_channel] Ошибка: {e}")
+    finally:
+        try: cur.close()
+        except: pass
+        return_db_connection(conn)
+
+def get_broadcast_channels():
+    """Возвращает список включенных каналов для рассылки"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT channel_id, channel_name FROM broadcast_channels WHERE enabled = 1")
+        return cur.fetchall()
+    except Exception as e:
+        print(f"[get_broadcast_channels] Ошибка: {e}")
+        return []
+    finally:
+        try: cur.close()
+        except: pass
+        return_db_connection(conn)
 
 def main_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
