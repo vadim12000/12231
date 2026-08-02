@@ -32,8 +32,7 @@ from flask import Flask, request
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-SECRET_WORD_STR = os.getenv("SECRET_WORD") or "7zR$8qM!2p@K9x#V"
-SECRET_WORD = SECRET_WORD_STR.encode('utf-8')[:16].ljust(16, b'\0')
+SECRET_WORD = b"7zR$8qM!2p@K9x#V"
 
 # Чтение пароля для веб-административной панели из Render
 WEB_PASSWORD = os.getenv("WEB_PASSWORD", "")
@@ -3601,7 +3600,6 @@ def serve_subscription(token):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Считываем user_id, дату окончания подписки, статус блокировки/заморозки и статус индивидуального шифрования
         cur.execute("""
             SELECT user_id, subscription_end, is_blocked, is_frozen, COALESCE(encryption_enabled, 1) 
             FROM users WHERE token = %s
@@ -3616,12 +3614,21 @@ def serve_subscription(token):
         if is_blocked == 1 or is_frozen == 1 or sub_end < current_time:
             return "Subscription expired or blocked", 403
             
-        raw_keys = get_subscription_keys_from_db()
+        db_keys = get_subscription_keys_from_db()
         
-        # Получаем глобальную настройку шифрования подписок (по умолчанию 1 - включено)
+        # Гарантируем, что ключи чистые vless:// перед зашифровыванием
+        raw_keys = []
+        for k in db_keys:
+            if k.startswith(("vless://", "vmess://", "trojan://", "ss://")):
+                raw_keys.append(k)
+            else:
+                dec = decrypt_and_parse_vless(k)
+                if dec and dec.startswith(("vless://", "vmess://", "trojan://", "ss://")):
+                    raw_keys.append(dec)
+                else:
+                    raw_keys.append(k)
+        
         global_crypt = get_setting("global_encryption", "1") == "1"
-        
-        # Решение: шифровать, только если шифрование включено и глобально, и у самого пользователя
         use_encryption = global_crypt and (user_crypt == 1)
         
         if use_encryption:
@@ -3632,7 +3639,6 @@ def serve_subscription(token):
                     encrypted_lines.append(encrypted)
             final_text = "\n".join(encrypted_lines)
         else:
-            # Если шифрование отключено, возвращаем стандартные raw-ссылки, разделенные переносом строки
             final_text = "\n".join(raw_keys)
             
         base64_response = base64.b64encode(final_text.encode('utf-8')).decode('utf-8')
