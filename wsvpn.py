@@ -33,7 +33,7 @@ from flask import Flask, request
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-SECRET_WORD = b"7zR$8qM!2p@K9x#V"
+SECRET_WORD = b"fA0P#XQt9V!P}>r_"
 
 # Чтение пароля для веб-административной панели из Render
 WEB_PASSWORD = os.getenv("WEB_PASSWORD", "")
