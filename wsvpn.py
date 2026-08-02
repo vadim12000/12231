@@ -3600,30 +3600,92 @@ def serve_subscription(token):
     SECRET_USER_AGENT = "WSVPN-Android-Client/2.0 (AppBuild-2026; SecureVault)"
     SECRET_SIGNATURE = "WSVPN-Secured-Post-Auth-2026"
 
-    # 1. Если кликнули в БРАУЗЕРЕ (GET) — показываем веб-страницу блокировки
+    # 1. Если кликнули в БРАУЗЕРЕ (GET-запрос) — показываем страницу с артом
     if request.method == 'GET':
-        html_troll = """
+        # 🔗 Вставьте сюда прямую ссылку на загруженную картинку
+        IMAGE_URL = "https://i.postimg.cc/your_image.jpg"  # Замените на вашу ссылку на фото
+
+        html_troll = f"""
         <!DOCTYPE html>
-        <html>
+        <html lang="ru">
         <head>
             <title>WSVPN Protection</title>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
-                body { background-color: #0D0D11; color: white; font-family: sans-serif; text-align: center; padding: 40px 20px; }
-                .card { background: #16161E; border: 1px solid #2D54FF; border-radius: 20px; padding: 30px; max-width: 450px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-                h1 { color: #FF5252; font-size: 24px; margin-bottom: 10px; }
-                p { color: #AAA; font-size: 15px; line-height: 1.5; }
-                .btn { display: inline-block; margin-top: 25px; background: #2D54FF; color: white; padding: 14px 28px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 15px; }
+                * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+                body {{
+                    background-color: #0D0D11;
+                    color: white;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 100vh;
+                    padding: 20px;
+                }}
+                .card {{
+                    background: #16161E;
+                    border: 1.5px solid #2D54FF;
+                    border-radius: 28px;
+                    padding: 24px;
+                    max-width: 380px;
+                    width: 100%;
+                    text-align: center;
+                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+                }}
+                .avatar-container {{
+                    width: 220px;
+                    height: 220px;
+                    margin: 0 auto 20px auto;
+                    border-radius: 20px;
+                    overflow: hidden;
+                    border: 2px solid #2D54FF;
+                    box-shadow: 0 8px 25px rgba(45, 84, 255, 0.3);
+                }}
+                .avatar-container img {{
+                    width: 100%;
+                    height: 100%;
+                    object-fit: cover;
+                }}
+                h1 {{
+                    color: #FF5252;
+                    font-size: 20px;
+                    font-weight: 800;
+                    margin-bottom: 10px;
+                }}
+                p {{
+                    color: #A0A0B0;
+                    font-size: 14px;
+                    line-height: 1.5;
+                    margin-bottom: 22px;
+                }}
+                .btn {{
+                    display: block;
+                    width: 100%;
+                    background: #2D54FF;
+                    color: white;
+                    padding: 14px;
+                    text-decoration: none;
+                    border-radius: 16px;
+                    font-weight: bold;
+                    font-size: 15px;
+                    transition: background 0.2s;
+                }}
+                .btn:hover {{
+                    background: #1A3FE0;
+                }}
             </style>
         </head>
         <body>
             <div class="card">
-                <h1>😼 Не надо открывать ссылку в браузерах!</h1>
-                <p>Ты хотел посмотреть конфиги через F12 / DevTools?</p>
-                <p>Эта ссылка работает только через <b>POST-запросы</b> внутри официального приложения <b>WSVPN</b>.</p>
+                <div class="avatar-container">
+                    <img src="{IMAGE_URL}" alt="Bad Boy!">
+                </div>
+                <h1>Ай-ай-ай, не надо так делать!</h1>
+                <p>Плохой мальчик! 😼<br>Не нужно открывать ссылку подписки в браузере.<br>Скопируйте её и вставьте в наше приложение <b>WSVPN</b>.</p>
                 <a href="https://github.com/VSd223/WSVPN/releases/download/V1.0/app-debug.apk" class="btn">
-                    📥 Скачать клиент
+                    📥 Скачать клиент WSVPN
                 </a>
             </div>
         </body>
@@ -3644,7 +3706,7 @@ def serve_subscription(token):
         base64_decoy = base64.b64encode(decoy_vless.encode('utf-8')).decode('utf-8')
         return base64_decoy, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
-    # 3. НАСТОЯЩАЯ ВЫДАЧА ПОДПИСКИ ДЛЯ НАШЕГО ПРИЛОЖЕНИЯ
+    # 3. НАСТОЯЩАЯ ВЫДАЧА ПОДПИСКИ ДЛЯ НАШЕГО ПРИЛОЖЕНИЯ (POST)
     conn = get_db_connection()
     cur = conn.cursor()
     try:
