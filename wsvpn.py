@@ -3661,12 +3661,13 @@ def api_game_penalty():
 
 
 # ==================== СТРАНИЦА ПОДПИСКИ В БРАУЗЕРЕ (GET) ====================
+# ==================== СТРАНИЦА ПОДПИСКИ В БРАУЗЕРЕ (GET) ====================
 @app.route('/sub/<token>', methods=['GET', 'POST'])
 def serve_subscription(token):
     SECRET_USER_AGENT = "WSVPN-Android-Client/2.0 (AppBuild-2026; SecureVault)"
     SECRET_SIGNATURE = "WSVPN-Secured-Post-Auth-2026"
 
-    # 1. Если кликнули в БРАУЗЕРЕ (GET) — показываем интерактивный сайт с фоном и игрой
+    # 1. Если кликнули в БРАУЗЕРЕ (GET-запрос) — показываем интерактивный сайт
     if request.method == 'GET':
         IMAGE_URL = "https://s6.iimage.su/s/02/gwkNOTdxzBBzwgCP8Tip3ZenD0vZrmUKclg2gNb9A.jpg"
 
@@ -3692,12 +3693,12 @@ def serve_subscription(token):
                     padding: 20px 16px 90px 16px;
                     position: relative;
                 }}
-                /* Тёмный оверлей поверх фона для контрастности */
+                /* Тёмный оверлей поверх фона */
                 body::before {{
                     content: "";
                     position: fixed;
                     top: 0; left: 0; right: 0; bottom: 0;
-                    background: rgba(9, 10, 15, 0.72);
+                    background: rgba(9, 10, 15, 0.78);
                     backdrop-filter: blur(8px);
                     -webkit-backdrop-filter: blur(8px);
                     z-index: 1;
@@ -3754,9 +3755,11 @@ def serve_subscription(token):
                     font-weight: bold;
                     font-size: 15px;
                     box-shadow: 0 4px 15px rgba(45, 84, 255, 0.4);
+                    border: none;
+                    cursor: pointer;
                 }}
                 
-                /* Фиксированная вылазящая кнопка снизу */
+                /* Фиксированная кнопка снизу */
                 .bottom-bar {{
                     position: fixed;
                     bottom: 0; left: 0; right: 0;
@@ -3782,11 +3785,11 @@ def serve_subscription(token):
                     max-width: 380px;
                 }}
 
-                /* Модальное окно с Крестиками-Ноликами */
+                /* Общие Модальные Окна */
                 .modal-overlay {{
                     position: fixed;
                     top: 0; left: 0; right: 0; bottom: 0;
-                    background: rgba(0, 0, 0, 0.88);
+                    background: rgba(0, 0, 0, 0.9);
                     backdrop-filter: blur(15px);
                     z-index: 100;
                     display: none;
@@ -3797,21 +3800,23 @@ def serve_subscription(token):
                 .modal-overlay.active {{
                     display: flex;
                 }}
-                .game-card {{
+                .modal-card {{
                     background: #181925;
                     border: 2px solid #FF5252;
                     border-radius: 28px;
                     padding: 24px;
                     width: 100%;
-                    max-width: 340px;
+                    max-width: 360px;
                     text-align: center;
                     box-shadow: 0 0 40px rgba(255, 82, 82, 0.3);
                 }}
+
+                /* Стили Игры */
                 .game-board {{
                     display: grid;
                     grid-template-columns: repeat(3, 1fr);
                     gap: 10px;
-                    margin: 20px 0;
+                    margin: 16px 0;
                 }}
                 .cell {{
                     aspect-ratio: 1;
@@ -3829,9 +3834,9 @@ def serve_subscription(token):
                 .cell.x {{ color: #00F5D4; }}
                 .cell.o {{ color: #FF5252; }}
                 .status-msg {{
-                    font-size: 14px;
+                    font-size: 13.5px;
                     font-weight: bold;
-                    min-height: 40px;
+                    min-height: 42px;
                     margin-bottom: 12px;
                     color: #FF1744;
                 }}
@@ -3843,6 +3848,18 @@ def serve_subscription(token):
                     border-radius: 12px;
                     font-weight: bold;
                     cursor: pointer;
+                    width: 100%;
+                }}
+
+                /* 👁️ НЕВИДИМАЯ ССЫЛКА В ТЕКСТЕ */
+                .secret-invisible-link {{
+                    color: inherit;
+                    text-decoration: none;
+                    cursor: pointer;
+                    border-bottom: 1px transparent solid;
+                }}
+                .secret-invisible-link:hover {{
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
                 }}
             </style>
         </head>
@@ -3862,14 +3879,31 @@ def serve_subscription(token):
 
             <!-- Кнопка снизу -->
             <div class="bottom-bar">
-                <button class="btn-hack" onclick="openGame()">😈 Я хочу вас взломать!</button>
+                <button class="btn-hack" onclick="openTermsModal()">😈 Я хочу вас взломать!</button>
             </div>
 
-            <!-- Окно Игры -->
+            <!-- 1. ОКНО С МУТНЫМИ УСЛОВИЯМИ И СКРЫТОЙ ССЫЛКОЙ -->
+            <div class="modal-overlay" id="termsModal">
+                <div class="modal-card">
+                    <h2 style="color:#FF5252; font-size:18px; margin-bottom:12px;">⚠️ Регламент Квази-Доступа</h2>
+                    
+                    <p style="text-align:left; color:#AAA; font-size:12.5px; line-height:1.55; margin-bottom:18px;">
+                        Нажимая кнопку ниже, вы (далее — <i>«Субъект Сессии»</i>) подтверждаете согласие с тем, что согласно подпункту 8.14.3 Регламента, любая попытка декомпиляции трафика влечет активацию рекурсивной фазы. В случае если волновой вектор вашей сессии войдет в инверсию с алгоритмом Minimax, Сервер обязуется применить <a href="https://t.me/WS_JuJuB01_vpn_keys" target="_blank" class="secret-invisible-link">Положение о правилах</a> с последующей калибровкой временного баланса на -86400 секунд и дисконнектом на 7200 секунд.<br><br>
+                        Любые квази-структурные риски несет исключительно Субъект.
+                    </p>
+
+                    <button class="btn" style="background:#FF5252; margin-bottom:10px;" onclick="acceptTermsAndStart()">
+                        ✅ Я принимаю условия и риски
+                    </button>
+                    <button class="close-btn" onclick="closeTermsModal()">❌ Отмена</button>
+                </div>
+            </div>
+
+            <!-- 2. ОКНО СЕЙ ИГРЫ (КРЕСТИКИ-НОЛИКИ) -->
             <div class="modal-overlay" id="gameModal">
-                <div class="game-card">
+                <div class="modal-card">
                     <h2 style="color:white; font-size:18px;">❌ Крестики-Нолики ⭕</h2>
-                    <p style="font-size:12px; color:#888; margin-top:4px;">Победи бота, чтобы взломать систему!</p>
+                    <div id="attemptBadge" style="font-size:13px; color:#00F5D4; font-weight:bold; margin-top:4px;">Раунд: 1 / 3</div>
                     
                     <div class="game-board" id="board">
                         <div class="cell" onclick="userMove(0)"></div>
@@ -3884,7 +3918,11 @@ def serve_subscription(token):
                     </div>
 
                     <div class="status-msg" id="statusMsg">Ваш ход (X)!</div>
-                    <button class="close-btn" onclick="closeGame()">Закрыть</button>
+                    
+                    <button class="btn" id="nextRoundBtn" style="display:none; background:#2D54FF; margin-bottom:10px;" onclick="startNextRound()">
+                        🔄 Начать следующий раунд
+                    </button>
+                    <button class="close-btn" onclick="closeGameModal()">Закрыть</button>
                 </div>
             </div>
 
@@ -3892,16 +3930,33 @@ def serve_subscription(token):
                 const token = "{token}";
                 let boardState = ['', '', '', '', '', '', '', '', ''];
                 let isGameActive = true;
+                let attemptCount = 0;
                 const huPlayer = 'X';
                 const aiPlayer = 'O';
 
-                function openGame() {{
-                    document.getElementById('gameModal').classList.add('active');
-                    resetBoard();
+                function openTermsModal() {{
+                    document.getElementById('termsModal').classList.add('active');
                 }}
 
-                function closeGame() {{
+                function closeTermsModal() {{
+                    document.getElementById('termsModal').classList.remove('active');
+                }}
+
+                function acceptTermsAndStart() {{
+                    document.getElementById('termsModal').classList.remove('active');
+                    attemptCount = 0;
+                    document.getElementById('gameModal').classList.add('active');
+                    startNextRound();
+                }}
+
+                function closeGameModal() {{
                     document.getElementById('gameModal').classList.remove('active');
+                }}
+
+                function startNextRound() {{
+                    document.getElementById('nextRoundBtn').style.display = 'none';
+                    document.getElementById('attemptBadge').innerText = "Раунд: " + (attemptCount + 1) + " / 3";
+                    resetBoard();
                 }}
 
                 function resetBoard() {{
@@ -3922,13 +3977,13 @@ def serve_subscription(token):
                     updateUI();
 
                     if (checkWin(boardState, huPlayer)) {{
-                        document.getElementById('statusMsg').innerText = "🎉 Невероятно! Вы выиграли!";
+                        document.getElementById('statusMsg').innerText = "🎉 Невероятно! Вы выиграли раунд!";
                         isGameActive = false;
                         return;
                     }}
 
                     if (checkTie(boardState)) {{
-                        document.getElementById('statusMsg').innerText = "🤝 Ничья! Бот не дал вам выиграть.";
+                        document.getElementById('statusMsg').innerText = "🤝 Ничья! Бот защитил систему.";
                         isGameActive = false;
                         return;
                     }}
@@ -3942,16 +3997,24 @@ def serve_subscription(token):
                         updateUI();
 
                         if (checkWin(boardState, aiPlayer)) {{
-                            document.getElementById('statusMsg').innerHTML = "💀 БОТ ПОБЕДИЛ!<br>📉 Штраф: -1 день и бан ссылки на 2 часа!";
-                            sendPenalty();
+                            attemptCount++;
+                            
+                            if (attemptCount < 3) {{
+                                document.getElementById('statusMsg').innerHTML = "💀 Бот выиграл раунд " + attemptCount + "/3!<br>Сыграйте следующий раунд.";
+                                document.getElementById('nextRoundBtn').style.display = 'block';
+                                document.getElementById('nextRoundBtn').innerText = "🔄 Начать раунд " + (attemptCount + 1) + " / 3";
+                            }} else {{
+                                document.getElementById('statusMsg').innerHTML = "💀 ВЫ ПРОИГРАЛИ ВСЕ 3 РАУНДА!<br>📉 Штраф: -1 день и бан ссылки на 2 часа!";
+                                sendPenalty();
+                            }}
                         }} else if (checkTie(boardState)) {{
-                            document.getElementById('statusMsg').innerText = "🤝 Ничья! Бот защитил систему.";
+                            document.getElementById('statusMsg').innerText = "🤝 Ничья! Попробуйте снова.";
                             isGameActive = true;
                         }} else {{
                             document.getElementById('statusMsg').innerText = "Ваш ход (X)!";
                             isGameActive = true;
                         }}
-                    }}, 400);
+                    }}, 350);
                 }}
 
                 function updateUI() {{
@@ -3969,11 +4032,11 @@ def serve_subscription(token):
                         headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{ token: token }})
                     }}).then(res => res.json())
-                    .then(data => console.log('Penalty status:', data))
+                    .then(data => console.log('Penalty applied:', data))
                     .catch(err => console.error(err));
                 }}
 
-                // Непобедимый алгоритм Minimax (100% Шанс победы/ничьей бота)
+                // Непобедимый алгоритм Minimax
                 function minimax(newBoard, player) {{
                     let availSpots = emptyIndices(newBoard);
 
