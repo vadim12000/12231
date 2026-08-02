@@ -92,17 +92,17 @@ def clean_and_split_incoming_keys(raw_text):
     """
     ⚡ УМНЫЙ КЛИНЕР И РАСКЛЕЙЩИК КЛЮЧЕЙ
     1. Удаляет перед протоколами мусорные цифры (например '1vless://' -> 'vless://')
-    2. Разрезает слипшиеся ссылки, если они отправлены в 1 строку через пробел
+    2. Разрезает слипшиеся ссылки, со строгой границей слова \b (чтобы ss:// не срезал vless://)
     3. Декодирует URL-закодированные флаги и эмодзи (#%F0%9F%87%AB -> #🇫🇲)
     """
     if not raw_text or not raw_text.strip():
         return []
 
     # Убираем префиксные цифры перед протоколами (например "1vless://" -> "vless://")
-    cleaned_text = re.sub(r'(?i)\b\d+(?=(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', '', raw_text.strip())
+    cleaned_text = re.sub(r'(?i)\b\d+(?=\b(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', '', raw_text.strip())
 
-    # Разделяем слипшиеся ссылки по заголовкам протоколов
-    pattern = re.compile(r'(?=(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', re.IGNORECASE)
+    # Разделяем слипшиеся ссылки по заголовкам протоколов со строгой границей слова \b
+    pattern = re.compile(r'(?i)(?=\b(?:vless|vmess|trojan|ss|hy2|hysteria2)://)')
     raw_parts = pattern.split(cleaned_text)
 
     cleaned_keys = []
@@ -113,8 +113,8 @@ def clean_and_split_incoming_keys(raw_text):
         if not part:
             continue
 
-        # Ищем совпадение ссылки с протоколом
-        match = re.search(r'(?i)(vless|vmess|trojan|ss|hy2|hysteria2)://[^\s]+', part)
+        # ⚡ ИСПРАВЛЕНИЕ: Ищем точное совпадение протокола с границей слова \b
+        match = re.search(r'(?i)\b(vless|vmess|trojan|ss|hy2|hysteria2)://[^\s]+', part)
         if not match:
             continue
 
@@ -686,16 +686,20 @@ def get_subscription_keys_from_db():
         return_db_connection(conn)
 
 def save_subscription_keys_to_db(keys):
-    """Дедуплицирует ключи с сохранением порядка и записывает их в БД"""
-    cleaned = list(dict.fromkeys(k for k in keys if k))
-    
+    """
+    ⚡ ПОЛНОЕ И СИНХРОННОЕ УДАЛЕНИЕ / СОХРАНЕНИЕ
+    Очищает и обновляет ключи одновременно во всех таблицах БД и в RAM-кэше.
+    """
+    global _keys_cache, _keys_cache_time
+    cleaned = list(dict.fromkeys(k for k in keys if k and k.strip()))
+
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Очищаем таблицу перед перезаписью
+        # 1. Полностью очищаем основную таблицу ключей
         cur.execute("DELETE FROM subscription_keys")
-        
-        # Построчно вставляем новые ключи подписки
+
+        # 2. Построчно вставляем новые ключи (если список не пуст)
         current_time = int(time.time())
         for k in cleaned:
             cur.execute("""
@@ -703,9 +707,17 @@ def save_subscription_keys_to_db(keys):
                 VALUES (%s, %s)
                 ON CONFLICT (key_value) DO NOTHING
             """, (k, current_time))
+
+        # 3. Полностью обновляем/очищаем резервную настройку vless_keys в settings
+        cur.execute("""
+            INSERT INTO settings (key, value) 
+            VALUES ('vless_keys', %s) 
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        """, ('|||'.join(cleaned),))
+
         conn.commit()
     except Exception as e:
-        print(f"[db] Ошибка при сохранении ключей подписки: {e}")
+        print(f"[db] Ошибка при сохранении/удалении ключей подписки: {e}")
         try:
             conn.rollback()
         except:
@@ -716,6 +728,11 @@ def save_subscription_keys_to_db(keys):
         except:
             pass
         return_db_connection(conn)
+
+    # 4. ОБЯЗАТЕЛЬНО очищаем/обновляем кэш в оперативной памяти (RAM)
+    with _keys_lock:
+        _keys_cache = cleaned.copy()
+        _keys_cache_time = time.time()
 
 def _build_vless_link(outbound, remark=None):
     settings = outbound.get('settings', {}) or {}
@@ -1882,7 +1899,7 @@ def show_keys_menu(user_id, chat_id, message_id):
         f"🔑 *Управление ключами*\n\n"
         f"📋 *Подписка /sub:* {len(sub_keys)} ключей\n"
         f"🗑️ Выдано ключей: {total_issued}\n\n"
-        f"Используйте крипто-инструменты для проверки зашифрованных линков:"
+        f"Используйте инструменты ниже для управления базой:"
     )
     
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -1894,14 +1911,17 @@ def show_keys_menu(user_id, chat_id, message_id):
         types.InlineKeyboardButton("➕ Дописать новые", callback_data="admin_add_keys_bot"),
         types.InlineKeyboardButton("🔄 Перезаписать ВСЕ", callback_data="admin_overwrite_keys_bot")
     )
-    # Новые крипто-кнопки
+    # ⚡ НОВАЯ КНОПКА ПОШТУЧНОГО УДАЛЕНИЯ
+    kb.add(
+        types.InlineKeyboardButton("🗑️ Поштучное удаление", callback_data="admin_sub_keys_manage_delete")
+    )
     kb.add(
         types.InlineKeyboardButton("🔓 Дешифратор строк", callback_data="admin_crypto_decrypt"),
         types.InlineKeyboardButton("🔒 Шифратор VLESS", callback_data="admin_crypto_encrypt")
     )
     kb.add(
         types.InlineKeyboardButton("🧹 Очистить нерабочие", callback_data="admin_keys_clean_dead"),
-        types.InlineKeyboardButton("🗑️ Очистить ВСЕ", callback_data="admin_keys_clear_all")
+        types.InlineKeyboardButton("💥 ОЧИСТИТЬ ВСЕ", callback_data="admin_keys_clear_all")
     )
     kb.add(
         types.InlineKeyboardButton("🔙 Назад", callback_data="admin_back_panel")
