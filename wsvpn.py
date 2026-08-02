@@ -88,6 +88,53 @@ def set_maintenance_mode(state_str):
     with _maintenance_lock:
         _maintenance_mode_cache = (state_str == "1")
 
+def clean_and_split_incoming_keys(raw_text):
+    """
+    ⚡ УМНЫЙ КЛИНЕР И РАСКЛЕЙЩИК КЛЮЧЕЙ
+    1. Удаляет перед протоколами мусорные цифры (например '1vless://' -> 'vless://')
+    2. Разрезает слипшиеся ссылки, если они отправлены в 1 строку через пробел
+    3. Декодирует URL-закодированные флаги и эмодзи (#%F0%9F%87%AB -> #🇫🇲)
+    """
+    if not raw_text or not raw_text.strip():
+        return []
+
+    # Убираем префиксные цифры перед протоколами (например "1vless://" -> "vless://")
+    cleaned_text = re.sub(r'(?i)\b\d+(?=(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', '', raw_text.strip())
+
+    # Разделяем слипшиеся ссылки по заголовкам протоколов
+    pattern = re.compile(r'(?=(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', re.IGNORECASE)
+    raw_parts = pattern.split(cleaned_text)
+
+    cleaned_keys = []
+    seen = set()
+
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        # Ищем совпадение ссылки с протоколом
+        match = re.search(r'(?i)(vless|vmess|trojan|ss|hy2|hysteria2)://[^\s]+', part)
+        if not match:
+            continue
+
+        link = match.group(0).strip()
+
+        # Декодируем названия серверов после # (например #%F0%9F%87%AB... -> #🇫🇲...)
+        if '#' in link:
+            base_url, hash_tag = link.split('#', 1)
+            try:
+                decoded_tag = urllib.parse.unquote(hash_tag)
+                link = f"{base_url}#{decoded_tag}"
+            except Exception:
+                pass
+
+        if link and link not in seen:
+            seen.add(link)
+            cleaned_keys.append(link)
+
+    return cleaned_keys
+
 def is_maintenance_active():
     """Безопасно и мгновенно возвращает статус тех. работ из оперативной памяти"""
     with _maintenance_lock:
@@ -1413,18 +1460,49 @@ def process_admin_add_keys_bot(message):
         bot.reply_to(message, "❌ Текст сообщения пуст. Операция отменена.")
         return
     
-    new_keys = [line.strip() for line in text.split('\n') if line.strip()]
+    # ⚡ Автоматическая расклейка и очистка ключей от мусора
+    new_keys = clean_and_split_incoming_keys(text)
     if not new_keys:
         bot.reply_to(message, "❌ Валидных ключей не найдено. Операция отменена.")
         return
     
     current_keys = get_subscription_keys_from_db()
-    # ПОРЯДОК СОХРАНЕН: используем dict.fromkeys вместо неупорядоченного set()
     all_keys = list(dict.fromkeys(current_keys + new_keys))
     save_subscription_keys_to_db(all_keys)
     
     log_admin_action(user_id, "Добавил ключи через бота", details=f"Добавлено: {len(new_keys)} ключей")
-    bot.reply_to(message, f"✅ Успешно импортировано и сохранено {len(new_keys)} ключей в базу подписок!")
+    bot.reply_to(
+        message, 
+        f"✅ *Успешно очищено, расклеено и сохранено `{len(new_keys)}` ключей в базу подписок!*",
+        parse_mode="Markdown"
+    )
+
+def process_admin_overwrite_keys_bot(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id) or not has_permission(user_id, 'manage_keys'):
+        bot.reply_to(message, "⛔️ Нет прав")
+        return
+    
+    text = message.text
+    if not text or text.strip().lower() == "/cancel":
+        bot.reply_to(message, "❌ Действие отменено. База ключей осталась без изменений.")
+        return
+        
+    # ⚡ Автоматическая расклейка и очистка ключей от мусора
+    new_keys = clean_and_split_incoming_keys(text)
+    if not new_keys:
+        bot.reply_to(message, "❌ Валидных ключей не найдено. Отменено.")
+        return
+        
+    save_subscription_keys_to_db(new_keys)
+    
+    log_admin_action(user_id, "Полностью перезаписал ключи через бота", details=f"Новых ключей: {len(new_keys)}")
+    bot.reply_to(
+        message, 
+        f"🔄 *База успешно очищена и перезаписана!*\n\n"
+        f"Все старые записи стёрты. Теперь в базе содержится `{len(new_keys)}` расклеенных красивых конфигураций.",
+        parse_mode="Markdown"
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_keys_clear_all")
 def callback_keys_clear_all(call):
