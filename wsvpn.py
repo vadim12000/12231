@@ -93,65 +93,82 @@ def is_maintenance_active():
     with _maintenance_lock:
         return _maintenance_mode_cache
 
-# ==========================================
-# БЛОК ШИФРОВАНИЯ (AES-128-ECB) СПЕЦ. СЛОВОМ
-# ==========================================
-
 def parse_and_encrypt_vless(vless_url, expire_timestamp=None):
-    """Шифрует сырую ссылку напрямую с помощью AES-128-ECB и SECRET_WORD"""
-    if not vless_url:
+    """
+    Шифрует сырую ссылку подписки в формате AES-128-GCM для Android-приложения.
+    Формат вывода: Base64(IV[12 bytes] + Ciphertext + Tag[16 bytes])
+    """
+    if not vless_url or not vless_url.strip().startswith(("vless://", "vmess://", "trojan://", "ss://")):
         return None
-        
-    vless_url = vless_url.strip()
-    if not vless_url.startswith(("vless://", "vmess://", "trojan://", "ss://")):
-        return vless_url # Возвращаем как есть, если это не поддерживаемый протокол
-        
     try:
-        cipher = AES.new(SECRET_WORD, AES.MODE_ECB)
-        padded_data = pad(vless_url.encode('utf-8'), 16)
-        encrypted = cipher.encrypt(padded_data)
-        return base64.b64encode(encrypted).decode('utf-8')
+        url_bytes = vless_url.strip().encode('utf-8')
+        
+        # Генерируем случайный 12-байтовый IV (вектор инициализации)
+        iv = os.urandom(12)
+        
+        # Создаем шифр AES-GCM
+        cipher = AES.new(SECRET_WORD, AES.MODE_GCM, nonce=iv)
+        ciphertext, tag = cipher.encrypt_and_digest(url_bytes)
+        
+        # Объединяем: IV (12B) + Шифротекст + Auth Tag (16B)
+        combined = iv + ciphertext + tag
+        
+        # Кодируем в Base64
+        return base64.b64encode(combined).decode('utf-8')
     except Exception as e:
-        print(f"[encrypt] Ошибка шифрования ссылки: {e}")
+        print(f"[encrypt] Ошибка шифрования ссылки в AES-GCM: {e}")
         return None
 
 def decrypt_and_parse_vless(encrypted_b64):
-    """Дешифрует одиночную строку обратно в сырую ссылку"""
+    """
+    Дешифрует строку AES-128-GCM обратно в чистую ссылку (для веб-админки и бота)
+    """
     if not encrypted_b64:
         return None
     try:
-        encrypted_b64 = encrypted_b64.strip()
-        encrypted_data = base64.b64decode(encrypted_b64)
-        cipher = AES.new(SECRET_WORD, AES.MODE_ECB)
-        decrypted = cipher.decrypt(encrypted_data)
-        return unpad(decrypted, 16).decode('utf-8')
+        combined = base64.b64decode(encrypted_b64.strip())
+        if len(combined) <= 12 + 16:
+            return None
+            
+        iv = combined[:12]         # Первые 12 байт — IV
+        tag = combined[-16:]       # Последние 16 байт — Tag
+        ciphertext = combined[12:-16] # Середина — шифротекст
+        
+        cipher = AES.new(SECRET_WORD, AES.MODE_GCM, nonce=iv)
+        decrypted_bytes = cipher.decrypt_and_verify(ciphertext, tag)
+        return decrypted_bytes.decode('utf-8')
     except Exception as e:
-        # Тихо игнорируем ошибку, если строка не зашифрована
+        print(f"[decrypt] Ошибка расшифрования AES-GCM: {e}")
         return None
 
 def decrypt_any_subscription_input(raw_input):
-    """Дешифрует как одиночную строку, так и полный Base64-бандл"""
+    """
+    Дешифрует как одиночную зашифрованную строку, так и полный Base64-бандл подписки
+    """
     raw_input = raw_input.strip()
     if not raw_input:
         return []
     
-    # 1. Пробуем как одиночную строку
+    # 1. Попробуем расшифровать как одиночную зашифрованную строку
     decrypted = decrypt_and_parse_vless(raw_input)
     if decrypted and decrypted.startswith(("vless://", "vmess://", "trojan://", "ss://")):
         return [decrypted]
         
-    # 2. Пробуем как бандл
+    # 2. Если не вышло, пробуем распарсить как подписку (двойной Base64)
     try:
         outer_decoded = base64.b64decode(raw_input).decode('utf-8')
         lines = [line.strip() for line in outer_decoded.split('\n') if line.strip()]
         results = []
         for line in lines:
-            dec = decrypt_and_parse_vless(line)
-            if dec and dec.startswith(("vless://", "vmess://", "trojan://", "ss://")):
-                results.append(dec)
+            if line.startswith(("vless://", "vmess://", "trojan://", "ss://")):
+                results.append(line)
+            else:
+                dec = decrypt_and_parse_vless(line)
+                if dec and dec.startswith(("vless://", "vmess://", "trojan://", "ss://")):
+                    results.append(dec)
         return results
     except Exception as e:
-        print(f"[decrypt_any] Не удалось распознать: {e}")
+        print(f"[decrypt_any] Ошибка чтения бандла: {e}")
         
     return []
 
@@ -1339,110 +1356,6 @@ def callback_toggle_maintenance(call):
     status = "ВКЛЮЧЕН" if new_state == "1" else "ВЫКЛЮЧЕН"
     bot.answer_callback_query(call.id, f"🛠 Режим тех. обслуживания {status}!", show_alert=True)
 
-@bot.message_handler(commands=['add_days'])
-def cmd_add_days(message):
-    update_activity()
-    admin_id = message.from_user.id
-    
-    # Проверка, является ли отправитель администратором и есть ли у него нужное право
-    if not is_admin(admin_id) or not has_permission(admin_id, 'add_days'):
-        return
-
-    parts = message.text.split()
-    if len(parts) < 3:
-        bot.reply_to(
-            message, 
-            "❌ Неверный формат!\nИспользуйте: `/add_days ID_ИЛИ_USERNAME КОЛИЧЕСТВО_ДНЕЙ`\n\nПример: `/add_days @username 30`", 
-            parse_mode="Markdown"
-        )
-        return
-
-    target_str = parts[1].strip()
-    days_str = parts[2].strip()
-
-    # Проверка корректности введенных дней
-    try:
-        days = int(days_str)
-        if days <= 0:
-            raise ValueError
-    except ValueError:
-        bot.reply_to(message, "❌ Количество дней должно быть целым положительным числом.")
-        return
-
-    # Поиск ID пользователя по введенной строке (ID или @username)
-    target_id = find_user_id(target_str)
-    if not target_id:
-        bot.reply_to(message, f"❌ Пользователь `{target_str}` не найден в базе данных бота.", parse_mode="Markdown")
-        return
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    current_time = int(time.time())
-    
-    try:
-        cur.execute("SELECT subscription_end, is_frozen, frozen_days_left FROM users WHERE user_id = %s", (target_id,))
-        row = cur.fetchone()
-        if not row:
-            bot.reply_to(message, "❌ Пользователь не найден в таблице users.")
-            return
-
-        subscription_end, is_frozen, frozen_days_left = row
-
-        if is_frozen == 1:
-            # Если подписка заморожена, прибавляем дни к сохраненному остатку заморозки
-            new_frozen = (frozen_days_left or 0) + days
-            cur.execute("UPDATE users SET frozen_days_left = %s WHERE user_id = %s", (new_frozen, target_id))
-            details_msg = f"Добавил {days} дн. к замороженной подписке"
-            expire_str = f"Заморожена (останется {new_frozen} дн.)"
-        else:
-            # Если активна или истекла, сдвигаем конечную дату относительно текущего момента или даты окончания
-            base_time = max(current_time, subscription_end or 0)
-            new_end = base_time + days * 24 * 60 * 60
-            cur.execute("""
-                UPDATE users 
-                SET subscription_end = %s, notified_3days = 0, notified_expired = 0 
-                WHERE user_id = %s
-            """, (new_end, target_id))
-            details_msg = f"Добавил {days} дн. подписки"
-            expire_str = datetime.fromtimestamp(new_end).strftime("%d.%m.%Y в %H:%M")
-
-        conn.commit()
-        clear_user_cache(target_id)
-        
-        # Запись действия в лог администратора
-        log_admin_action(admin_id, details_msg, target_id=target_id)
-        
-        bot.reply_to(
-            message, 
-            f"✅ Успешно!\n👤 Пользователю `{target_str}` (ID: `{target_id}`) добавлено `{days}` дней.\n📅 Новая подписка до: `{expire_str}`", 
-            parse_mode="Markdown"
-        )
-
-        # Отправка уведомления пользователю
-        try:
-            if is_frozen == 1:
-                bot.send_message(
-                    target_id, 
-                    f"🎁 Администратор увеличил вашу замороженную подписку на {days} дней!\n"
-                    f"Она останется замороженной до тех пор, пока вы не активируете её в меню."
-                )
-            else:
-                bot.send_message(
-                    target_id, 
-                    f"🎉 Ваша подписка продлена на {days} дней администратором!\n📅 Действительна до: {expire_str}"
-                )
-        except Exception as e:
-            print(f"[cmd_add_days] Не удалось отправить сообщение пользователю {target_id}: {e}")
-
-    except Exception as e:
-        print(f"[cmd_add_days] Ошибка: {e}")
-        bot.reply_to(message, "❌ Произошла непредвиденная ошибка при изменении подписки в базе данных.")
-    finally:
-        try:
-            cur.close()
-        except:
-            pass
-        return_db_connection(conn)
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_back_panel")
 def callback_admin_back_panel(call):
@@ -3698,46 +3611,6 @@ def callback_admin_reset_link(call):
 
 @app.route('/sub/<token>')
 def serve_subscription(token):
-    # Получаем реальный IP-адрес клиента на платформе Render
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-    ua = request.headers.get('User-Agent', '').lower()
-    referer = request.headers.get('Referer', '').lower()
-    origin = request.headers.get('Origin', '').lower()
-    
-    # Выводим информацию в логи Render для мониторинга
-    print(f"[sub_request] IP: {client_ip} | UA: {ua} | Referer: {referer} | Origin: {origin}")
-
-    # 1. Блокировка по прямым признакам в заголовках браузера
-    block_keywords = ['happy-decoder', 'unhapp', 'happwn', 'decoder', 'decrypt', 'all_subs', 'github']
-    if any(kw in referer for kw in block_keywords) or any(kw in origin for kw in block_keywords):
-        return "Access Denied: Web Decoder Blocked", 403
-
-    # 2. Блокировка стандартных библиотек запросов
-    blocked_agents = [
-        'python-requests', 'node-fetch', 'axios', 'got', 'aiohttp', 'urllib',
-        'go-http-client', 'curl', 'wget', 'postman', 'scrapy', 'libcurl',
-        'httpclient', 'headless', 'playwright', 'puppeteer'
-    ]
-    if any(agent in ua for agent in blocked_agents):
-        return "Access Denied: Scraper library blocked", 403
-
-    # 3. Активная блокировка серверов и хостингов (Reverse DNS)
-    try:
-        socket.setdefaulttimeout(1.0)
-        host_info = socket.gethostbyaddr(client_ip)
-        hostname = host_info[0].lower() if host_info else ""
-        
-        hosting_keywords = [
-            'hetzner', 'ovh', 'digitalocean', 'linode', 'amazon', 'aws', 'google', 
-            'hosting', 'vps', 'server', 'cloud', 'contabo', 'scaleway', 'leaseweb', 
-            'm2.ae', 'web-hosting', 'datacenter', 'dedicated'
-        ]
-        if any(kw in hostname for kw in hosting_keywords):
-            print(f"[Block] Запрос заблокирован. IP {client_ip} принадлежит хостингу ({hostname})")
-            return "Access Denied: Datacenter IP Blocked", 403
-    except Exception:
-        pass
-
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -3750,9 +3623,6 @@ def serve_subscription(token):
         if not user:
             return "Invalid token", 404
         
-        # =========================================================
-        # НОВАЯ ЛОГИКА ШИФРОВАНИЯ
-        # =========================================================
         user_id, sub_end, is_blocked, is_frozen, user_crypt = user
         current_time = int(time.time())
         
@@ -3761,10 +3631,10 @@ def serve_subscription(token):
             
         raw_keys = get_subscription_keys_from_db()
         
-        # Получаем глобальную настройку шифрования
-        global_crypt = get_setting('global_encryption', '1') == '1'
+        # Получаем глобальную настройку шифрования подписок (по умолчанию 1 - включено)
+        global_crypt = get_setting("global_encryption", "1") == "1"
         
-        # Шифруем, если включено глобально И не отключено лично у пользователя (/crypt_off)
+        # Решение: шифровать, только если шифрование включено и глобально, и у самого пользователя
         use_encryption = global_crypt and (user_crypt == 1)
         
         if use_encryption:
@@ -3773,21 +3643,14 @@ def serve_subscription(token):
                 encrypted = parse_and_encrypt_vless(link, sub_end)
                 if encrypted:
                     encrypted_lines.append(encrypted)
-                else:
-                    encrypted_lines.append(link) # Защита от потери ключа при ошибке
             final_text = "\n".join(encrypted_lines)
         else:
+            # Если шифрование отключено, возвращаем стандартные raw-ссылки, разделенные переносом строки
             final_text = "\n".join(raw_keys)
             
-        # Кодируем итоговый результат в Base64 для передачи клиенту
         base64_response = base64.b64encode(final_text.encode('utf-8')).decode('utf-8')
-        # =========================================================
-
-        return base64_response, 200, {
-            'Content-Type': 'application/octet-stream',
-            'Content-Disposition': 'attachment; filename="subscription.txt"',
-            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0'
-        }
+        
+        return base64_response, 200, {'Content-Type': 'text/plain; charset=utf-8'}
     except Exception as e:
         print(f"Ошибка в /sub/{token}: {e}")
         return "Internal Error", 500
