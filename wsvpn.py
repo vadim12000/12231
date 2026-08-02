@@ -3603,7 +3603,7 @@ def serve_subscription(token):
     # 1. Если кликнули в БРАУЗЕРЕ (GET-запрос) — показываем страницу с артом
     if request.method == 'GET':
         # 🔗 Вставьте сюда прямую ссылку на загруженную картинку
-        IMAGE_URL = "https://i.postimg.cc/your_image.jpg"  # Замените на вашу ссылку на фото
+        IMAGE_URL = "https://s6.iimage.su/s/02/gwkNOTdxzBBzwgCP8Tip3ZenD0vZrmUKclg2gNb9A.jpg"  # Замените на вашу ссылку на фото
 
         html_troll = f"""
         <!DOCTYPE html>
