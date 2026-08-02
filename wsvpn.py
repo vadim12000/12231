@@ -32,7 +32,7 @@ from flask import Flask, request
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-SECRET_WORD_STR = os.getenv("SECRET_WORD", "7zR$8qM!2p@K9x#V")
+SECRET_WORD_STR = os.getenv("SECRET_WORD") or "7zR$8qM!2p@K9x#V"
 SECRET_WORD = SECRET_WORD_STR.encode('utf-8')[:16].ljust(16, b'\0')
 
 # Чтение пароля для веб-административной панели из Render
