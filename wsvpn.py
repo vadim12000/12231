@@ -119,6 +119,20 @@ def parse_and_encrypt_vless(vless_url, expire_timestamp=None):
         print(f"[encrypt] Ошибка шифрования ссылки в AES-GCM: {e}")
         return None
 
+def split_concatenated_keys(keys_list):
+    """Разбивает любые слипшиеся ключи по заголовкам протоколов"""
+    result = []
+    pattern = re.compile(r'(?=(?:vless|vmess|trojan|ss|hy2|hysteria2)://)', re.IGNORECASE)
+    for item in keys_list:
+        if not item:
+            continue
+        parts = pattern.split(item)
+        for p in parts:
+            cleaned = p.strip()
+            if cleaned.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://", "hysteria2://")):
+                result.append(cleaned)
+    return result
+
 def decrypt_and_parse_vless(encrypted_b64):
     """
     Дешифрует строку AES-128-GCM обратно в чистую ссылку (для веб-админки и бота)
@@ -4141,6 +4155,7 @@ def serve_subscription(token):
             return "Subscription expired or blocked", 403
             
         db_keys = get_subscription_keys_from_db()
+        raw_keys = split_concatenated_keys(db_keys) # ⚡ Расклеиваем ключи перед отдачей
         
         raw_keys = []
         for k in db_keys:
