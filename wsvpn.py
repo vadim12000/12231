@@ -3595,55 +3595,56 @@ def callback_admin_reset_link(call):
     # Обновляем карточку пользователя для администратора
     _refresh_user_card(call, target_id, admin_id)
 
-@app.route('/sub/<token>')
+@app.route('/sub/<token>', methods=['GET', 'POST'])
 def serve_subscription(token):
     SECRET_USER_AGENT = "WSVPN-Android-Client/2.0 (AppBuild-2026; SecureVault)"
-    incoming_ua = request.headers.get('User-Agent', '')
+    SECRET_SIGNATURE = "WSVPN-Secured-Post-Auth-2026"
 
-    # 🔒 ПРОВЕРКА: Если запрос пришел НЕ от нашего Android приложения
-    if incoming_ua != SECRET_USER_AGENT:
-        # 1. Если открыли через браузер — показываем стильную веб-страницу
-        if any(b in incoming_ua for b in ["Mozilla", "Chrome", "Safari", "Edge", "Opera"]):
-            html_troll = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>WSVPN Security</title>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>
-                    body { background-color: #0D0D11; color: white; font-family: sans-serif; text-align: center; padding: 40px 20px; }
-                    .card { background: #16161E; border: 1px solid #2D54FF; border-radius: 20px; padding: 30px; max-width: 450px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-                    h1 { color: #FF5252; font-size: 26px; margin-bottom: 10px; }
-                    p { color: #AAA; font-size: 15px; line-height: 1.5; }
-                    .btn { display: inline-block; margin-top: 25px; background: #2D54FF; color: white; padding: 14px 28px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 15px; }
-                    .btn:hover { background: #1b3fd1; }
-                </style>
-            </head>
-            <body>
-                <div class="card">
-                    <h1>😼 Эй! Не надо так делать!</h1>
-                    <p>Ты хотел взломать нас или просто случайно открыл ссылку в браузере?</p>
-                    <p>Эта ссылка создана исключительно для работы внутри нашего официального Android-приложения <b>WSVPN</b>.</p>
-                    <a href="https://github.com/VSd223/WSVPN/releases/download/V1.0/app-debug.apk" class="btn">
-                        📱 Скачать официальный клиент
-                    </a>
-                </div>
-            </body>
-            </html>
-            """
-            return html_troll, 200, {'Content-Type': 'text/html; charset=utf-8'}
-        
-        # 2. Если вставили в чужой VPN-клиент (v2rayN/NekoBox) — отдаем тролль-конфиг
+    # 1. Если кликнули в БРАУЗЕРЕ (GET) — показываем веб-страницу блокировки
+    if request.method == 'GET':
+        html_troll = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>WSVPN Protection</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body { background-color: #0D0D11; color: white; font-family: sans-serif; text-align: center; padding: 40px 20px; }
+                .card { background: #16161E; border: 1px solid #2D54FF; border-radius: 20px; padding: 30px; max-width: 450px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+                h1 { color: #FF5252; font-size: 24px; margin-bottom: 10px; }
+                p { color: #AAA; font-size: 15px; line-height: 1.5; }
+                .btn { display: inline-block; margin-top: 25px; background: #2D54FF; color: white; padding: 14px 28px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 15px; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>😼 Не надо открывать ссылку в браузерах!</h1>
+                <p>Ты хотел посмотреть конфиги через F12 / DevTools?</p>
+                <p>Эта ссылка работает только через <b>POST-запросы</b> внутри официального приложения <b>WSVPN</b>.</p>
+                <a href="https://github.com/VSd223/WSVPN/releases/download/V1.0/app-debug.apk" class="btn">
+                    📥 Скачать клиент
+                </a>
+            </div>
+        </body>
+        </html>
+        """
+        return html_troll, 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+    # 2. Если POST-запрос от ЧУЖОГО клиента или без секретной подписи
+    incoming_ua = request.headers.get('User-Agent', '')
+    incoming_sig = request.headers.get('X-WSVPN-Signature', '')
+
+    if incoming_ua != SECRET_USER_AGENT or incoming_sig != SECRET_SIGNATURE:
         decoy_vless = (
             "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:443?type=tcp#❌%20Ты%20хотел%20взломать%20нас%3F\n"
-            "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:443?type=tcp#⛔%20Не%20надо%20так%20делать!\n"
+            "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:443?type=tcp#⛔%20Используй%20официальное%20приложение!\n"
             "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:443?type=tcp#📱%20Скачай%20клиент%20в%20боте%20@WSVPN_Bobot"
         )
         base64_decoy = base64.b64encode(decoy_vless.encode('utf-8')).decode('utf-8')
         return base64_decoy, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
-    # ✅ Если запрос от НАШЕГО приложения — отдаем реальные зашифрованные ключи
+    # 3. НАСТОЯЩАЯ ВЫДАЧА ПОДПИСКИ ДЛЯ НАШЕГО ПРИЛОЖЕНИЯ
     conn = get_db_connection()
     cur = conn.cursor()
     try:
