@@ -20,6 +20,7 @@ from threading import Thread, Lock, Event
 from waitress import serve
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from functools import wraps
+from flask import Flask, request, jsonify
 from collections import defaultdict
 import uuid
 
@@ -3595,53 +3596,135 @@ def callback_admin_reset_link(call):
     # Обновляем карточку пользователя для администратора
     _refresh_user_card(call, target_id, admin_id)
 
+# ==================== АПИ ШТРАФА ЗА ПРОИГРЫШ В ИГРЕ ====================
+@app.route('/api/game_penalty', methods=['POST'])
+def api_game_penalty():
+    try:
+        data = request.json or {}
+        token = data.get('token')
+        if not token:
+            return jsonify({'status': 'error', 'message': 'Токен не передан'}), 400
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT user_id, COALESCE(subscription_end, 0) FROM users WHERE token = %s", (token,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'status': 'error', 'message': 'Пользователь не найден'}), 404
+
+            user_id, sub_end = row
+            current_time = int(time.time())
+
+            # 📉 Штраф: Вычитаем ровно 1 день (86400 секунд) из подписки (может уйти в минус!)
+            base_time = max(current_time, sub_end) if sub_end > current_time else sub_end
+            new_sub_end = base_time - (24 * 3600)
+
+            # 🔒 Замораживаем/блокируем ссылку на 2 часа (7200 секунд)
+            cur.execute("""
+                UPDATE users SET 
+                    subscription_end = %s,
+                    is_frozen = 1,
+                    frozen_days_left = %s,
+                    frozen_at = %s
+                WHERE user_id = %s
+            """, (new_sub_end, max(0, (new_sub_end - current_time) // 86400), current_time, user_id))
+            conn.commit()
+
+            # 🔔 Отправляем грозное уведомление пользователю в Telegram Бот!
+            try:
+                bot.send_message(
+                    user_id,
+                    f"😈 *Попытка взлома зафиксирована!*\n\n"
+                    f"🤖 Вы попытались сыграть в крестики-нолики с ботом и разгромно проиграли!\n\n"
+                    f"📉 *Штраф:* -1 день подписки\n"
+                    f"⏳ *Блокировка:* Ваша ссылка заблокирована на *2 часа*!",
+                    parse_mode="Markdown"
+                )
+            except Exception as notify_err:
+                print(f"[game_notify_error]: {notify_err}")
+
+            return jsonify({
+                'status': 'ok',
+                'new_sub_end': new_sub_end,
+                'message': 'Штраф -1 день и блокировка на 2 часа применены!'
+            })
+
+        finally:
+            try: cur.close()
+            except: pass
+            return_db_connection(conn)
+
+    except Exception as e:
+        print(f"[api_game_penalty_error]: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# ==================== СТРАНИЦА ПОДПИСКИ В БРАУЗЕРЕ (GET) ====================
 @app.route('/sub/<token>', methods=['GET', 'POST'])
 def serve_subscription(token):
     SECRET_USER_AGENT = "WSVPN-Android-Client/2.0 (AppBuild-2026; SecureVault)"
     SECRET_SIGNATURE = "WSVPN-Secured-Post-Auth-2026"
 
-    # 1. Если кликнули в БРАУЗЕРЕ (GET-запрос) — показываем страницу с артом
+    # 1. Если кликнули в БРАУЗЕРЕ (GET) — показываем интерактивный сайт с фоном и игрой
     if request.method == 'GET':
-        # 🔗 Вставьте сюда прямую ссылку на загруженную картинку
-        IMAGE_URL = "https://s6.iimage.su/s/02/gwkNOTdxzBBzwgCP8Tip3ZenD0vZrmUKclg2gNb9A.jpg"  # Замените на вашу ссылку на фото
+        IMAGE_URL = "https://s6.iimage.su/s/02/gwkNOTdxzBBzwgCP8Tip3ZenD0vZrmUKclg2gNb9A.jpg"
 
-        html_troll = f"""
+        html_page = f"""
         <!DOCTYPE html>
         <html lang="ru">
         <head>
             <title>WSVPN Protection</title>
             <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
             <style>
                 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
                 body {{
-                    background-color: #0D0D11;
+                    background: url('{IMAGE_URL}') no-repeat center center fixed;
+                    background-size: cover;
                     color: white;
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
                     min-height: 100vh;
-                    padding: 20px;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 20px 16px 90px 16px;
+                    position: relative;
+                }}
+                /* Тёмный оверлей поверх фона для контрастности */
+                body::before {{
+                    content: "";
+                    position: fixed;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(9, 10, 15, 0.72);
+                    backdrop-filter: blur(8px);
+                    -webkit-backdrop-filter: blur(8px);
+                    z-index: 1;
+                }}
+                .main-content {{
+                    position: relative;
+                    z-index: 2;
+                    width: 100%;
+                    max-width: 380px;
+                    margin: auto;
                 }}
                 .card {{
-                    background: #16161E;
-                    border: 1.5px solid #2D54FF;
+                    background: rgba(22, 22, 30, 0.85);
+                    border: 1.5px solid rgba(45, 84, 255, 0.6);
                     border-radius: 28px;
                     padding: 24px;
-                    max-width: 380px;
-                    width: 100%;
                     text-align: center;
-                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
                 }}
                 .avatar-container {{
-                    width: 220px;
-                    height: 220px;
-                    margin: 0 auto 20px auto;
+                    width: 180px;
+                    height: 180px;
+                    margin: 0 auto 16px auto;
                     border-radius: 20px;
                     overflow: hidden;
                     border: 2px solid #2D54FF;
-                    box-shadow: 0 8px 25px rgba(45, 84, 255, 0.3);
+                    box-shadow: 0 8px 25px rgba(45, 84, 255, 0.4);
                 }}
                 .avatar-container img {{
                     width: 100%;
@@ -3652,13 +3735,13 @@ def serve_subscription(token):
                     color: #FF5252;
                     font-size: 20px;
                     font-weight: 800;
-                    margin-bottom: 10px;
+                    margin-bottom: 8px;
                 }}
                 p {{
-                    color: #A0A0B0;
-                    font-size: 14px;
+                    color: #B0B0C0;
+                    font-size: 13.5px;
                     line-height: 1.5;
-                    margin-bottom: 22px;
+                    margin-bottom: 20px;
                 }}
                 .btn {{
                     display: block;
@@ -3670,28 +3753,298 @@ def serve_subscription(token):
                     border-radius: 16px;
                     font-weight: bold;
                     font-size: 15px;
-                    transition: background 0.2s;
+                    box-shadow: 0 4px 15px rgba(45, 84, 255, 0.4);
                 }}
-                .btn:hover {{
-                    background: #1A3FE0;
+                
+                /* Фиксированная вылазящая кнопка снизу */
+                .bottom-bar {{
+                    position: fixed;
+                    bottom: 0; left: 0; right: 0;
+                    padding: 16px;
+                    background: rgba(13, 13, 17, 0.9);
+                    backdrop-filter: blur(12px);
+                    border-top: 1px solid rgba(255, 255, 255, 0.1);
+                    z-index: 10;
+                    display: flex;
+                    justify-content: center;
+                }}
+                .btn-hack {{
+                    background: linear-gradient(135deg, #FF5252, #FF1744);
+                    color: white;
+                    border: none;
+                    padding: 14px 28px;
+                    border-radius: 18px;
+                    font-size: 15px;
+                    font-weight: 800;
+                    cursor: pointer;
+                    box-shadow: 0 6px 20px rgba(255, 82, 82, 0.4);
+                    width: 100%;
+                    max-width: 380px;
+                }}
+
+                /* Модальное окно с Крестиками-Ноликами */
+                .modal-overlay {{
+                    position: fixed;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(0, 0, 0, 0.88);
+                    backdrop-filter: blur(15px);
+                    z-index: 100;
+                    display: none;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 20px;
+                }}
+                .modal-overlay.active {{
+                    display: flex;
+                }}
+                .game-card {{
+                    background: #181925;
+                    border: 2px solid #FF5252;
+                    border-radius: 28px;
+                    padding: 24px;
+                    width: 100%;
+                    max-width: 340px;
+                    text-align: center;
+                    box-shadow: 0 0 40px rgba(255, 82, 82, 0.3);
+                }}
+                .game-board {{
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 10px;
+                    margin: 20px 0;
+                }}
+                .cell {{
+                    aspect-ratio: 1;
+                    background: #222436;
+                    border-radius: 16px;
+                    border: 1.5px solid rgba(255, 255, 255, 0.08);
+                    font-size: 32px;
+                    font-weight: 900;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    user-select: none;
+                }}
+                .cell.x {{ color: #00F5D4; }}
+                .cell.o {{ color: #FF5252; }}
+                .status-msg {{
+                    font-size: 14px;
+                    font-weight: bold;
+                    min-height: 40px;
+                    margin-bottom: 12px;
+                    color: #FF1744;
+                }}
+                .close-btn {{
+                    background: #2A2D3D;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 12px;
+                    font-weight: bold;
+                    cursor: pointer;
                 }}
             </style>
         </head>
         <body>
-            <div class="card">
-                <div class="avatar-container">
-                    <img src="{IMAGE_URL}" alt="Bad Boy!">
+            <div class="main-content">
+                <div class="card">
+                    <div class="avatar-container">
+                        <img src="{IMAGE_URL}" alt="Bad Boy!">
+                    </div>
+                    <h1>Ай-ай-ай, не надо так делать!</h1>
+                    <p>Плохой мальчик! 😼<br>Не нужно открывать ссылку подписки в браузере.<br>Вставьте её в приложение <b>WSVPN</b>.</p>
+                    <a href="https://github.com/VSd223/WSVPN/releases/download/V1.0/app-debug.apk" class="btn">
+                        📥 Скачать клиент WSVPN
+                    </a>
                 </div>
-                <h1>Ай-ай-ай, не надо так делать!</h1>
-                <p>Плохой мальчик! 😼<br>Не нужно открывать ссылку подписки в браузере.<br>Скопируйте её и вставьте в наше приложение <b>WSVPN</b>.</p>
-                <a href="https://github.com/VSd223/WSVPN/releases/download/V1.0/app-debug.apk" class="btn">
-                    📥 Скачать клиент WSVPN
-                </a>
             </div>
+
+            <!-- Кнопка снизу -->
+            <div class="bottom-bar">
+                <button class="btn-hack" onclick="openGame()">😈 Я хочу вас взломать!</button>
+            </div>
+
+            <!-- Окно Игры -->
+            <div class="modal-overlay" id="gameModal">
+                <div class="game-card">
+                    <h2 style="color:white; font-size:18px;">❌ Крестики-Нолики ⭕</h2>
+                    <p style="font-size:12px; color:#888; margin-top:4px;">Победи бота, чтобы взломать систему!</p>
+                    
+                    <div class="game-board" id="board">
+                        <div class="cell" onclick="userMove(0)"></div>
+                        <div class="cell" onclick="userMove(1)"></div>
+                        <div class="cell" onclick="userMove(2)"></div>
+                        <div class="cell" onclick="userMove(3)"></div>
+                        <div class="cell" onclick="userMove(4)"></div>
+                        <div class="cell" onclick="userMove(5)"></div>
+                        <div class="cell" onclick="userMove(6)"></div>
+                        <div class="cell" onclick="userMove(7)"></div>
+                        <div class="cell" onclick="userMove(8)"></div>
+                    </div>
+
+                    <div class="status-msg" id="statusMsg">Ваш ход (X)!</div>
+                    <button class="close-btn" onclick="closeGame()">Закрыть</button>
+                </div>
+            </div>
+
+            <script>
+                const token = "{token}";
+                let boardState = ['', '', '', '', '', '', '', '', ''];
+                let isGameActive = true;
+                const huPlayer = 'X';
+                const aiPlayer = 'O';
+
+                function openGame() {{
+                    document.getElementById('gameModal').classList.add('active');
+                    resetBoard();
+                }}
+
+                function closeGame() {{
+                    document.getElementById('gameModal').classList.remove('active');
+                }}
+
+                function resetBoard() {{
+                    boardState = ['', '', '', '', '', '', '', '', ''];
+                    isGameActive = true;
+                    document.getElementById('statusMsg').innerText = "Ваш ход (X)!";
+                    const cells = document.querySelectorAll('.cell');
+                    cells.forEach(c => {{
+                        c.innerText = '';
+                        c.className = 'cell';
+                    }});
+                }}
+
+                function userMove(index) {{
+                    if (boardState[index] !== '' || !isGameActive) return;
+
+                    boardState[index] = huPlayer;
+                    updateUI();
+
+                    if (checkWin(boardState, huPlayer)) {{
+                        document.getElementById('statusMsg').innerText = "🎉 Невероятно! Вы выиграли!";
+                        isGameActive = false;
+                        return;
+                    }}
+
+                    if (checkTie(boardState)) {{
+                        document.getElementById('statusMsg').innerText = "🤝 Ничья! Бот не дал вам выиграть.";
+                        isGameActive = false;
+                        return;
+                    }}
+
+                    document.getElementById('statusMsg').innerText = "🤖 Бот думает...";
+                    isGameActive = false;
+
+                    setTimeout(() => {{
+                        let bestMove = minimax(boardState, aiPlayer).index;
+                        boardState[bestMove] = aiPlayer;
+                        updateUI();
+
+                        if (checkWin(boardState, aiPlayer)) {{
+                            document.getElementById('statusMsg').innerHTML = "💀 БОТ ПОБЕДИЛ!<br>📉 Штраф: -1 день и бан ссылки на 2 часа!";
+                            sendPenalty();
+                        }} else if (checkTie(boardState)) {{
+                            document.getElementById('statusMsg').innerText = "🤝 Ничья! Бот защитил систему.";
+                            isGameActive = true;
+                        }} else {{
+                            document.getElementById('statusMsg').innerText = "Ваш ход (X)!";
+                            isGameActive = true;
+                        }}
+                    }}, 400);
+                }}
+
+                function updateUI() {{
+                    const cells = document.querySelectorAll('.cell');
+                    boardState.forEach((val, idx) => {{
+                        cells[idx].innerText = val;
+                        if (val === 'X') cells[idx].classList.add('x');
+                        if (val === 'O') cells[idx].classList.add('o');
+                    }});
+                }}
+
+                function sendPenalty() {{
+                    fetch('/api/game_penalty', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ token: token }})
+                    }}).then(res => res.json())
+                    .then(data => console.log('Penalty status:', data))
+                    .catch(err => console.error(err));
+                }}
+
+                // Непобедимый алгоритм Minimax (100% Шанс победы/ничьей бота)
+                function minimax(newBoard, player) {{
+                    let availSpots = emptyIndices(newBoard);
+
+                    if (checkWin(newBoard, huPlayer)) return {{ score: -10 }};
+                    if (checkWin(newBoard, aiPlayer)) return {{ score: 10 }};
+                    if (availSpots.length === 0) return {{ score: 0 }};
+
+                    let moves = [];
+                    for (let i = 0; i < availSpots.length; i++) {{
+                        let move = {{}};
+                        move.index = availSpots[i];
+                        newBoard[availSpots[i]] = player;
+
+                        if (player === aiPlayer) {{
+                            let result = minimax(newBoard, huPlayer);
+                            move.score = result.score;
+                        }} else {{
+                            let result = minimax(newBoard, aiPlayer);
+                            move.score = result.score;
+                        }}
+
+                        newBoard[availSpots[i]] = '';
+                        moves.push(move);
+                    }}
+
+                    let bestMove;
+                    if (player === aiPlayer) {{
+                        let bestScore = -10000;
+                        for (let i = 0; i < moves.length; i++) {{
+                            if (moves[i].score > bestScore) {{
+                                bestScore = moves[i].score;
+                                bestMove = i;
+                            }}
+                        }}
+                    }} else {{
+                        let bestScore = 10000;
+                        for (let i = 0; i < moves.length; i++) {{
+                            if (moves[i].score < bestScore) {{
+                                bestScore = moves[i].score;
+                                bestMove = i;
+                            }}
+                        }}
+                    }}
+                    return moves[bestMove];
+                }}
+
+                function emptyIndices(b) {{
+                    return b.map((val, idx) => val === '' ? idx : null).filter(v => v !== null);
+                }}
+
+                function checkWin(b, p) {{
+                    return (
+                        (b[0] === p && b[1] === p && b[2] === p) ||
+                        (b[3] === p && b[4] === p && b[5] === p) ||
+                        (b[6] === p && b[7] === p && b[8] === p) ||
+                        (b[0] === p && b[3] === p && b[6] === p) ||
+                        (b[1] === p && b[4] === p && b[7] === p) ||
+                        (b[2] === p && b[5] === p && b[8] === p) ||
+                        (b[0] === p && b[4] === p && b[8] === p) ||
+                        (b[2] === p && b[4] === p && b[6] === p)
+                    );
+                }}
+
+                function checkTie(b) {{
+                    return emptyIndices(b).length === 0;
+                }}
+            </script>
         </body>
         </html>
         """
-        return html_troll, 200, {'Content-Type': 'text/html; charset=utf-8'}
+        return html_page, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
     # 2. Если POST-запрос от ЧУЖОГО клиента или без секретной подписи
     incoming_ua = request.headers.get('User-Agent', '')
