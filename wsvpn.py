@@ -172,19 +172,6 @@ def decrypt_any_subscription_input(raw_input):
         
     return []
 
-def parse_and_encrypt_vless(vless_url, expire_timestamp=None):
-    """Шифрует сырую ссылку напрямую БЕЗ даты окончания подписки"""
-    if not vless_url or not vless_url.startswith(("vless://", "vmess://", "trojan://", "ss://")):
-        return None
-    try:
-        cipher = AES.new(SECRET_WORD, AES.MODE_ECB)
-        padded_data = pad(vless_url.encode('utf-8'), 16)
-        encrypted = cipher.encrypt(padded_data)
-        return base64.b64encode(encrypted).decode('utf-8')
-    except Exception as e:
-        print(f"[encrypt] Ошибка шифрования ссылки: {e}")
-        return None
-
 def keep_alive_ping():
     url = os.getenv('RENDER_EXTERNAL_URL', '')
     if not url:
