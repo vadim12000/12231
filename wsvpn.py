@@ -3597,6 +3597,14 @@ def callback_admin_reset_link(call):
 
 @app.route('/sub/<token>')
 def serve_subscription(token):
+    # 🔒 ЗАЩИТА: Проверяем секретный User-Agent нашего приложения
+    SECRET_USER_AGENT = "WSVPN-Android-Client/2.0 (AppBuild-2026; SecureVault)"
+    incoming_user_agent = request.headers.get('User-Agent', '')
+    
+    if incoming_user_agent != SECRET_USER_AGENT:
+        # Для чужих браузеров, curl и сторонних клиентов - Доступ запрещен
+        return "Access Denied: Invalid Client", 403
+
     conn = get_db_connection()
     cur = conn.cursor()
     try:
