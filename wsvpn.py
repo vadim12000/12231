@@ -1435,8 +1435,10 @@ def callback_add_keys_bot(call):
     msg = bot.send_message(
         call.message.chat.id,
         "🔑 *Добавление VLESS ключей в базу подписок*\n\n"
-        "Отправьте мне список **VLESS** конфигураций (`vless://...`). \n"
-        "Вы можете вставить как одну, так и несколько ссылок одновременно (каждую с новой строки):",
+        "Вы можете отправить:\n"
+        "1️⃣ **Текст** со ссылками (`vless://...`)\n"
+        "2️⃣ **Текстовый файл (.txt)** с ключами (если ссылок много и они не помещаются в сообщение)\n\n"
+        "Отправьте текст или прикрепите `.txt` файл со списками VLESS:",
         parse_mode="Markdown"
     )
     bot.register_next_step_handler(msg, process_admin_add_keys_bot)
@@ -1449,25 +1451,26 @@ def process_admin_add_keys_bot(message):
         bot.reply_to(message, "⛔️ Нет прав")
         return
     
-    text = message.text
-    if not text:
-        bot.reply_to(message, "❌ Текст сообщения пуст. Операция отменена.")
+    # Читаем текст из сообщения или прикрепленного .txt файла
+    raw_text = extract_text_from_admin_message(message)
+    if not raw_text.strip():
+        bot.reply_to(message, "❌ Сообщение или файл пусты. Операция отменена.")
         return
     
-    # ⚡ Автоматическая расклейка и очистка ключей от мусора
-    new_keys = clean_and_split_incoming_keys(text)
+    # Автоматическая расклейка и очистка ключей от мусора
+    new_keys = clean_and_split_incoming_keys(raw_text)
     if not new_keys:
-        bot.reply_to(message, "❌ Валидных ключей не найдено. Операция отменена.")
+        bot.reply_to(message, "❌ Валидных VLESS ключей не найдено. Операция отменена.")
         return
     
     current_keys = get_subscription_keys_from_db()
     all_keys = list(dict.fromkeys(current_keys + new_keys))
     save_subscription_keys_to_db(all_keys)
     
-    log_admin_action(user_id, "Добавил ключи через бота", details=f"Добавлено: {len(new_keys)} ключей")
+    log_admin_action(user_id, "Добавил ключи через бота/файл", details=f"Добавлено: {len(new_keys)} ключей")
     bot.reply_to(
         message, 
-        f"✅ *Успешно очищено, расклеено и сохранено `{len(new_keys)}` ключей в базу подписок!*",
+        f"✅ *Успешно извлечено, расклеено и сохранено `{len(new_keys)}` VLESS ключей в базу!*",
         parse_mode="Markdown"
     )
 
@@ -1477,24 +1480,28 @@ def process_admin_overwrite_keys_bot(message):
         bot.reply_to(message, "⛔️ Нет прав")
         return
     
-    text = message.text
-    if not text or text.strip().lower() == "/cancel":
+    if message.text and message.text.strip().lower() == "/cancel":
         bot.reply_to(message, "❌ Действие отменено. База ключей осталась без изменений.")
         return
         
-    # ⚡ Автоматическая расклейка и очистка ключей от мусора
-    new_keys = clean_and_split_incoming_keys(text)
+    # Читаем текст из сообщения или прикрепленного .txt файла
+    raw_text = extract_text_from_admin_message(message)
+    if not raw_text.strip():
+        bot.reply_to(message, "❌ Не удалось прочитать текст или файл. Отменено.")
+        return
+        
+    new_keys = clean_and_split_incoming_keys(raw_text)
     if not new_keys:
-        bot.reply_to(message, "❌ Валидных ключей не найдено. Отменено.")
+        bot.reply_to(message, "❌ Валидных VLESS ключей не найдено. Отменено.")
         return
         
     save_subscription_keys_to_db(new_keys)
     
-    log_admin_action(user_id, "Полностью перезаписал ключи через бота", details=f"Новых ключей: {len(new_keys)}")
+    log_admin_action(user_id, "Полностью перезаписал ключи из файла/текста", details=f"Новых ключей: {len(new_keys)}")
     bot.reply_to(
         message, 
         f"🔄 *База успешно очищена и перезаписана!*\n\n"
-        f"Все старые записи стёрты. Теперь в базе содержится `{len(new_keys)}` расклеенных красивых конфигураций.",
+        f"Все старые записи стёрты. Теперь в базе содержится `{len(new_keys)}` новых VLESS конфигураций.",
         parse_mode="Markdown"
     )
 
@@ -3751,13 +3758,13 @@ def api_game_penalty():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-# ==================== СТРАНИЦА ПОДПИСКИ В БРАУЗЕРЕ (GET) ====================
+# ==================== СТРАНИЦА ПОДПИСКИ В БРАУЗЕРЕ И АПИ (GET / POST) ====================
 @app.route('/sub/<token>', methods=['GET', 'POST'])
 def serve_subscription(token):
     SECRET_USER_AGENT = "WSVPN-Android-Client/2.0 (AppBuild-2026; SecureVault)"
     SECRET_SIGNATURE = "WSVPN-Secured-Post-Auth-2026"
 
-    # 1. GET-запрос из браузера — показываем заглушку
+    # 1. Если кликнули в БРАУЗЕРЕ (GET-запрос) — показываем красивый интерактивный сайт с игрой
     if request.method == 'GET':
         IMAGE_URL = "https://s6.iimage.su/s/02/gwkNOTdxzBBzwgCP8Tip3ZenD0vZrmUKclg2gNb9A.jpg"
 
@@ -3767,9 +3774,31 @@ def serve_subscription(token):
         <head>
             <title>WSVPN Protection</title>
             <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
             <style>
                 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+                
+                @keyframes floatAvatar {{
+                    0%, 100% {{ transform: translateY(0px); box-shadow: 0 10px 30px rgba(45, 84, 255, 0.4); }}
+                    50% {{ transform: translateY(-8px); box-shadow: 0 20px 40px rgba(0, 245, 212, 0.5); }}
+                }}
+
+                @keyframes pulseGlow {{
+                    0%, 100% {{ border-color: rgba(255, 82, 82, 0.6); box-shadow: 0 0 25px rgba(255, 82, 82, 0.3); }}
+                    50% {{ border-color: rgba(0, 245, 212, 0.8); box-shadow: 0 0 35px rgba(0, 245, 212, 0.4); }}
+                }}
+
+                @keyframes modalIn {{
+                    0% {{ opacity: 0; transform: scale(0.8) translateY(30px); }}
+                    100% {{ opacity: 1; transform: scale(1) translateY(0); }}
+                }}
+
+                @keyframes cellPop {{
+                    0% {{ transform: scale(0.2); opacity: 0; }}
+                    70% {{ transform: scale(1.2); }}
+                    100% {{ transform: scale(1); opacity: 1; }}
+                }}
+
                 body {{
                     background: url('{IMAGE_URL}') no-repeat center center fixed;
                     background-size: cover;
@@ -3781,36 +3810,482 @@ def serve_subscription(token):
                     align-items: center;
                     justify-content: space-between;
                     padding: 20px 16px 90px 16px;
+                    position: relative;
+                    overflow-x: hidden;
                 }}
+                
+                body::before {{
+                    content: "";
+                    position: fixed;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(9, 10, 15, 0.82);
+                    backdrop-filter: blur(10px);
+                    -webkit-backdrop-filter: blur(10px);
+                    z-index: 1;
+                }}
+
+                .main-content {{
+                    position: relative;
+                    z-index: 2;
+                    width: 100%;
+                    max-width: 380px;
+                    margin: auto;
+                }}
+
                 .card {{
-                    background: rgba(22, 22, 30, 0.85);
-                    border: 1.5px solid rgba(45, 84, 255, 0.6);
+                    background: rgba(20, 22, 32, 0.88);
+                    border: 1.5px solid rgba(45, 84, 255, 0.5);
+                    border-radius: 28px;
+                    padding: 26px 22px;
+                    text-align: center;
+                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
+                    backdrop-filter: blur(16px);
+                }}
+
+                .avatar-container {{
+                    width: 170px;
+                    height: 170px;
+                    margin: 0 auto 18px auto;
+                    border-radius: 24px;
+                    overflow: hidden;
+                    border: 2.5px solid #2D54FF;
+                    animation: floatAvatar 4s ease-in-out infinite;
+                }}
+
+                .avatar-container img {{
+                    width: 100%;
+                    height: 100%;
+                    object-fit: cover;
+                }}
+
+                h1 {{
+                    color: #FF5252;
+                    font-size: 21px;
+                    font-weight: 800;
+                    margin-bottom: 10px;
+                    letter-spacing: -0.3px;
+                }}
+
+                p {{
+                    color: #B0B0C0;
+                    font-size: 13.5px;
+                    line-height: 1.55;
+                    margin-bottom: 22px;
+                }}
+
+                .btn {{
+                    display: block;
+                    width: 100%;
+                    background: linear-gradient(135deg, #2D54FF, #6C5CE7);
+                    color: white;
+                    padding: 15px;
+                    text-decoration: none;
+                    border-radius: 16px;
+                    font-weight: bold;
+                    font-size: 15px;
+                    box-shadow: 0 6px 20px rgba(45, 84, 255, 0.4);
+                    border: none;
+                    cursor: pointer;
+                    transition: transform 0.2s ease, box-shadow 0.2s ease;
+                }}
+
+                .btn:active {{
+                    transform: scale(0.97);
+                }}
+
+                .bottom-bar {{
+                    position: fixed;
+                    bottom: 0; left: 0; right: 0;
+                    padding: 16px;
+                    background: rgba(12, 13, 19, 0.92);
+                    backdrop-filter: blur(14px);
+                    border-top: 1px solid rgba(255, 255, 255, 0.08);
+                    z-index: 10;
+                    display: flex;
+                    justify-content: center;
+                }}
+
+                .btn-hack {{
+                    background: linear-gradient(135deg, #FF5252, #FF1744);
+                    color: white;
+                    border: none;
+                    padding: 15px 28px;
+                    border-radius: 18px;
+                    font-size: 15px;
+                    font-weight: 800;
+                    cursor: pointer;
+                    box-shadow: 0 6px 25px rgba(255, 82, 82, 0.45);
+                    width: 100%;
+                    max-width: 380px;
+                    transition: transform 0.2s ease;
+                }}
+
+                .btn-hack:active {{
+                    transform: scale(0.97);
+                }}
+
+                .modal-overlay {{
+                    position: fixed;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(4, 5, 10, 0.92);
+                    backdrop-filter: blur(18px);
+                    -webkit-backdrop-filter: blur(18px);
+                    z-index: 100;
+                    display: none;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 20px;
+                }}
+
+                .modal-overlay.active {{
+                    display: flex;
+                }}
+
+                .modal-card {{
+                    background: rgba(22, 24, 38, 0.95);
+                    border: 2px solid #FF5252;
                     border-radius: 28px;
                     padding: 24px;
+                    width: 100%;
+                    max-width: 360px;
                     text-align: center;
-                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
-                    margin: auto;
-                    max-width: 380px;
+                    animation: modalIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+                    animation-name: modalIn, pulseGlow;
+                    animation-duration: 0.35s, 4s;
+                    animation-iteration-count: 1, infinite;
                 }}
-                h1 {{ color: #FF5252; font-size: 20px; font-weight: 800; margin-bottom: 8px; }}
-                p {{ color: #B0B0C0; font-size: 13.5px; line-height: 1.5; margin-bottom: 20px; }}
-                .btn {{ display: block; width: 100%; background: #2D54FF; color: white; padding: 14px; text-decoration: none; border-radius: 16px; font-weight: bold; font-size: 15px; }}
+
+                .game-board {{
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 12px;
+                    margin: 18px 0;
+                }}
+
+                .cell {{
+                    aspect-ratio: 1;
+                    background: #181A2A;
+                    border-radius: 18px;
+                    border: 1.5px solid rgba(255, 255, 255, 0.08);
+                    font-size: 36px;
+                    font-weight: 900;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    user-select: none;
+                    transition: background 0.2s ease, transform 0.15s ease;
+                }}
+
+                .cell:active {{
+                    transform: scale(0.92);
+                    background: #22253B;
+                }}
+
+                .cell.x {{
+                    color: #00F5D4;
+                    text-shadow: 0 0 15px rgba(0, 245, 212, 0.6);
+                    animation: cellPop 0.25s ease-out forwards;
+                }}
+
+                .cell.o {{
+                    color: #FF5252;
+                    text-shadow: 0 0 15px rgba(255, 82, 82, 0.6);
+                    animation: cellPop 0.25s ease-out forwards;
+                }}
+
+                .status-msg {{
+                    font-size: 14px;
+                    font-weight: bold;
+                    min-height: 44px;
+                    margin-bottom: 14px;
+                    color: #00F5D4;
+                    line-height: 1.4;
+                }}
+
+                .close-btn {{
+                    background: #25283B;
+                    color: #AAA;
+                    border: none;
+                    padding: 12px 20px;
+                    border-radius: 14px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    width: 100%;
+                    font-size: 13.5px;
+                    transition: background 0.2s;
+                }}
+
+                .close-btn:hover {{
+                    background: #2F334D;
+                    color: white;
+                }}
+
+                .secret-invisible-link {{
+                    color: inherit;
+                    text-decoration: none;
+                    border-bottom: 1px transparent solid;
+                }}
             </style>
         </head>
         <body>
-            <div class="card">
-                <h1>Ай-ай-ай, не надо так делать!</h1>
-                <p>Не нужно открывать ссылку подписки в браузере.<br>Вставьте её в приложение <b>WSVPN</b>.</p>
-                <a href="https://github.com/VSd223/WSVPN/releases/tag/V1.0" class="btn">
-                    📥 Скачать клиент WSVPN
-                </a>
+            <div class="main-content">
+                <div class="card">
+                    <div class="avatar-container">
+                        <img src="{IMAGE_URL}" alt="Bad Boy!">
+                    </div>
+                    <h1>Ай-ай-ай, не надо так делать!</h1>
+                    <p>Плохой мальчик! 😼<br>Не нужно открывать ссылку подписки в браузере.<br>Вставьте её в приложение <b>WSVPN</b>.</p>
+                    <a href="https://github.com/VSd223/WSVPN/releases/tag/V1.0" class="btn">
+                        📥 Скачать клиент WSVPN
+                    </a>
+                </div>
             </div>
+
+            <div class="bottom-bar">
+                <button class="btn-hack" onclick="openTermsModal()">😈 Я хочу вас взломать!</button>
+            </div>
+
+            <div class="modal-overlay" id="termsModal">
+                <div class="modal-card">
+                    <h2 style="color:#FF5252; font-size:18px; margin-bottom:12px;">⚠️ Регламент Квази-Доступа</h2>
+                    
+                    <p style="text-align:left; color:#AAA; font-size:12.5px; line-height:1.55; margin-bottom:18px;">
+                        Нажимая кнопку ниже, вы подтверждаете согласие с тем, что согласно подпункту 8.14.3 Регламента, любая попытка декомпиляции трафика влечет активацию рекурсивной фазы. В случае если вы проиграете боту в Крестики-Нолики 3 раунда, Сервер обязуется применить <a href="https://t.me/WS_JuJuB01_vpn_keys" target="_blank" class="secret-invisible-link">Положение о правилах</a> с калибровкой баланса подписки на <b>-1 день (-86400 сек)</b> и блокировкой ссылки на <b>2 часа (7200 сек)</b>.<br><br>
+                        При ничьей вы сможете переиграть раунд без списывания попытки!
+                    </p>
+
+                    <button class="btn" style="background: linear-gradient(135deg, #FF5252, #FF1744); margin-bottom:10px;" onclick="acceptTermsAndStart()">
+                        ✅ Я принимаю условия и риски
+                    </button>
+                    <button class="close-btn" onclick="closeTermsModal()">❌ Отмена</button>
+                </div>
+            </div>
+
+            <div class="modal-overlay" id="gameModal">
+                <div class="modal-card">
+                    <h2 style="color:white; font-size:18px;">❌ Крестики-Нолики ⭕</h2>
+                    <div id="attemptBadge" style="font-size:13px; color:#00F5D4; font-weight:bold; margin-top:4px;">Раунд: 1 / 3</div>
+                    
+                    <div class="game-board" id="board">
+                        <div class="cell" onclick="userMove(0)"></div>
+                        <div class="cell" onclick="userMove(1)"></div>
+                        <div class="cell" onclick="userMove(2)"></div>
+                        <div class="cell" onclick="userMove(3)"></div>
+                        <div class="cell" onclick="userMove(4)"></div>
+                        <div class="cell" onclick="userMove(5)"></div>
+                        <div class="cell" onclick="userMove(6)"></div>
+                        <div class="cell" onclick="userMove(7)"></div>
+                        <div class="cell" onclick="userMove(8)"></div>
+                    </div>
+
+                    <div class="status-msg" id="statusMsg">Ваш ход (X)!</div>
+                    
+                    <button class="btn" id="nextRoundBtn" style="display:none; margin-bottom:10px;" onclick="startNextRound()">
+                        🔄 Начать следующий раунд
+                    </button>
+                    <button class="close-btn" onclick="closeGameModal()">Закрыть</button>
+                </div>
+            </div>
+
+            <script>
+                const token = "{token}";
+                let boardState = ['', '', '', '', '', '', '', '', ''];
+                let isGameActive = true;
+                let attemptCount = 0;
+                const huPlayer = 'X';
+                const aiPlayer = 'O';
+
+                function openTermsModal() {{
+                    document.getElementById('termsModal').classList.add('active');
+                }}
+
+                function closeTermsModal() {{
+                    document.getElementById('termsModal').classList.remove('active');
+                }}
+
+                function acceptTermsAndStart() {{
+                    document.getElementById('termsModal').classList.remove('active');
+                    attemptCount = 0;
+                    document.getElementById('gameModal').classList.add('active');
+                    startNextRound();
+                }}
+
+                function closeGameModal() {{
+                    document.getElementById('gameModal').classList.remove('active');
+                }}
+
+                function startNextRound() {{
+                    document.getElementById('nextRoundBtn').style.display = 'none';
+                    document.getElementById('attemptBadge').innerText = "Раунд: " + (attemptCount + 1) + " / 3";
+                    resetBoard();
+                }}
+
+                function resetBoard() {{
+                    boardState = ['', '', '', '', '', '', '', '', ''];
+                    isGameActive = true;
+                    document.getElementById('statusMsg').style.color = '#00F5D4';
+                    document.getElementById('statusMsg').innerText = "Ваш ход (X)!";
+                    const cells = document.querySelectorAll('.cell');
+                    cells.forEach(c => {{
+                        c.innerText = '';
+                        c.className = 'cell';
+                    }});
+                }}
+
+                function userMove(index) {{
+                    if (boardState[index] !== '' || !isGameActive) return;
+
+                    boardState[index] = huPlayer;
+                    updateUI();
+
+                    // Проверка победы человека (крайне маловероятно при Minimax)
+                    if (checkWin(boardState, huPlayer)) {{
+                        document.getElementById('statusMsg').style.color = '#00F5D4';
+                        document.getElementById('statusMsg').innerHTML = "🎉 <b>Невероятно!</b> Вы выиграли раунд!";
+                        isGameActive = false;
+                        return;
+                    }}
+
+                    // ПРОВЕРКА НИЧЬЕЙ сразу после хода игрока
+                    if (checkTie(boardState)) {{
+                        handleTie();
+                        return;
+                    }}
+
+                    document.getElementById('statusMsg').style.color = '#AAA';
+                    document.getElementById('statusMsg').innerText = "🤖 Бот думает...";
+                    isGameActive = false;
+
+                    setTimeout(() => {{
+                        let bestMove = minimax(boardState, aiPlayer).index;
+                        boardState[bestMove] = aiPlayer;
+                        updateUI();
+
+                        if (checkWin(boardState, aiPlayer)) {{
+                            attemptCount++;
+                            document.getElementById('statusMsg').style.color = '#FF5252';
+                            
+                            if (attemptCount < 3) {{
+                                document.getElementById('statusMsg').innerHTML = "💀 <b>Бот выиграл раунд " + attemptCount + "/3!</b><br>Сыграйте следующий раунд.";
+                                document.getElementById('nextRoundBtn').style.display = 'block';
+                                document.getElementById('nextRoundBtn').innerText = "🔄 Начать раунд " + (attemptCount + 1) + " / 3";
+                            }} else {{
+                                document.getElementById('statusMsg').innerHTML = "💀 <b>ВЫ ПРОИГРАЛИ ВСЕ 3 РАУНДА!</b><br>📉 Штраф: -1 день и бан ссылки на 2 часа!";
+                                sendPenalty();
+                            }}
+                        }} else if (checkTie(boardState)) {{
+                            handleTie();
+                        }} else {{
+                            document.getElementById('statusMsg').style.color = '#00F5D4';
+                            document.getElementById('statusMsg').innerText = "Ваш ход (X)!";
+                            isGameActive = true;
+                        }}
+                    }}, 350);
+                }}
+
+                // Единая функция удобной обработки НИЧЬЕЙ
+                function handleTie() {{
+                    document.getElementById('statusMsg').style.color = '#00F5D4';
+                    document.getElementById('statusMsg').innerHTML = "🤝 <b>Ничья!</b> Никто не выиграл.<br>Попробуйте сыграть ещё раз!";
+                    document.getElementById('nextRoundBtn').style.display = 'block';
+                    document.getElementById('nextRoundBtn').innerText = "🔄 Сыграть ещё раз";
+                    isGameActive = false;
+                }}
+
+                function updateUI() {{
+                    const cells = document.querySelectorAll('.cell');
+                    boardState.forEach((val, idx) => {{
+                        cells[idx].innerText = val;
+                        if (val === 'X') cells[idx].classList.add('x');
+                        if (val === 'O') cells[idx].classList.add('o');
+                    }});
+                }}
+
+                function sendPenalty() {{
+                    fetch('/api/game_penalty', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ token: token }})
+                    }}).then(res => res.json())
+                    .then(data => console.log('Penalty applied:', data))
+                    .catch(err => console.error(err));
+                }}
+
+                // Алгоритм непобедимого ИИ (Minimax)
+                function minimax(newBoard, player) {{
+                    let availSpots = emptyIndices(newBoard);
+
+                    if (checkWin(newBoard, huPlayer)) return {{ score: -10 }};
+                    if (checkWin(newBoard, aiPlayer)) return {{ score: 10 }};
+                    if (availSpots.length === 0) return {{ score: 0 }};
+
+                    let moves = [];
+                    for (let i = 0; i < availSpots.length; i++) {{
+                        let move = {{}};
+                        move.index = availSpots[i];
+                        newBoard[availSpots[i]] = player;
+
+                        if (player === aiPlayer) {{
+                            let result = minimax(newBoard, huPlayer);
+                            move.score = result.score;
+                        }} else {{
+                            let result = minimax(newBoard, aiPlayer);
+                            move.score = result.score;
+                        }}
+
+                        newBoard[availSpots[i]] = '';
+                        moves.push(move);
+                    }}
+
+                    let bestMove;
+                    if (player === aiPlayer) {{
+                        let bestScore = -10000;
+                        for (let i = 0; i < moves.length; i++) {{
+                            if (moves[i].score > bestScore) {{
+                                bestScore = moves[i].score;
+                                bestMove = i;
+                            }}
+                        }}
+                    }} else {{
+                        let bestScore = 10000;
+                        for (let i = 0; i < moves.length; i++) {{
+                            if (moves[i].score < bestScore) {{
+                                bestScore = moves[i].score;
+                                bestMove = i;
+                            }}
+                        }}
+                    }}
+                    return moves[bestMove];
+                }}
+
+                function emptyIndices(b) {{
+                    return b.map((val, idx) => val === '' ? idx : null).filter(v => v !== null);
+                }}
+
+                function checkWin(b, p) {{
+                    return (
+                        (b[0] === p && b[1] === p && b[2] === p) ||
+                        (b[3] === p && b[4] === p && b[5] === p) ||
+                        (b[6] === p && b[7] === p && b[8] === p) ||
+                        (b[0] === p && b[3] === p && b[6] === p) ||
+                        (b[1] === p && b[4] === p && b[7] === p) ||
+                        (b[2] === p && b[5] === p && b[8] === p) ||
+                        (b[0] === p && b[4] === p && b[8] === p) ||
+                        (b[2] === p && b[4] === p && b[6] === p)
+                    );
+                }}
+
+                function checkTie(b) {{
+                    return emptyIndices(b).length === 0;
+                }}
+            </script>
         </body>
         </html>
         """
         return html_page, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
-    # 2. Проверка заголовков безопасности на POST
+    # 2. Проверка заголовков безопасности на POST (от мобильного приложения WSVPN)
     incoming_ua = request.headers.get('User-Agent', '')
     incoming_sig = request.headers.get('X-WSVPN-Signature', '')
 
@@ -3823,7 +4298,7 @@ def serve_subscription(token):
         base64_decoy = base64.b64encode(decoy_vless.encode('utf-8')).decode('utf-8')
         return base64_decoy, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
-    # 3. Выдача VLESS подписки
+    # 3. Настоящая выдача VLESS подписки для Android-приложения
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -3843,7 +4318,6 @@ def serve_subscription(token):
             
         db_keys = get_subscription_keys_from_db()
         
-        # Фильтруем и отдаем СТРОГО только VLESS ссылки
         raw_keys = []
         for k in db_keys:
             split_keys = clean_and_split_incoming_keys(k)
@@ -3933,6 +4407,26 @@ def add_broadcast_channel(channel_id, channel_name, added_by):
         try: cur.close()
         except: pass
         return_db_connection(conn)
+
+def extract_text_from_admin_message(message):
+    """
+    Автоматически извлекает текст из обычного сообщения, 
+    подписи или прикрепленного .txt файла (для обхода лимита 4096 символов).
+    """
+    raw_text = ""
+    if message.text:
+        raw_text += message.text + "\n"
+    if message.caption:
+        raw_text += message.caption + "\n"
+    if message.document:
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            file_content = downloaded_file.decode('utf-8', errors='ignore')
+            raw_text += file_content + "\n"
+        except Exception as e:
+            print(f"[extract_text] Ошибка чтения прикрепленного файла: {e}")
+    return raw_text
 
 def get_broadcast_channels():
     """Возвращает список включенных каналов для рассылки"""
